@@ -1,0 +1,228 @@
+"""Tests for app/api.py."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+class TestCreateApp:
+    @pytest.fixture(autouse=True)
+    def setup(self, tmp_path: Path):
+        """Set up test fixtures."""
+        self.tmp_path = tmp_path
+
+    def test_create_app_returns_fastapi(self):
+        """Test that create_app returns a FastAPI application."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+            assert app is not None
+
+    def test_root_returns_html(self):
+        """Test that root endpoint returns HTML."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.get("/")
+            assert response.status_code == 200
+            assert "text/html" in response.headers.get("content-type", "")
+
+    def test_health_no_index(self):
+        """Test health endpoint when no index exists."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.get("/api/health")
+            assert response.status_code == 503
+
+    def test_status_no_index(self):
+        """Test status endpoint when no index exists."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.get("/api/status")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["stale"] is True
+            assert data["building"] is False
+
+    def test_search_empty_query(self):
+        """Test search endpoint with empty query."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = True
+        mock_qdrant.count.return_value = 10
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.post("/api/search", json={"query": ""})
+            assert response.status_code == 400
+
+    def test_search_triggers_auto_build(self):
+        """Test that search triggers auto-build when index is empty."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+        mock_qdrant.count.return_value = 0
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            # Should return 503 when auto-build fails (no real Qdrant)
+            response = client.post("/api/search", json={"query": "test"})
+            assert response.status_code == 503
+
+    def test_rebuild_returns_started(self):
+        """Test rebuild endpoint returns started status."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.post("/api/rebuild")
+            assert response.status_code == 200
+            assert response.json()["status"] == "started"
+
+    def test_rebuild_when_already_building(self):
+        """Test rebuild returns conflict when already building."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            # Simulate building state
+            app.state._rebuilding = True
+            app.state._rebuild_lock = True
+            client = TestClient(app)
+            response = client.post("/api/rebuild")
+            assert response.status_code == 409
+
+    def test_rebuild_selective_no_paths(self):
+        """Test selective rebuild returns error with no paths."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.post("/api/rebuild-selective", json={})
+            assert response.status_code == 400
+
+    def test_diff_no_index(self):
+        """Test diff endpoint when no index exists."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.get("/api/diff")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["has_index"] is False
+
+    def test_export_csv(self):
+        """Test export endpoint with CSV format."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.post(
+                "/api/export",
+                json={"results": [{"rank": 1, "path": "test.txt", "score": 0.95}], "format": "csv"},
+            )
+            assert response.status_code == 200
+            assert "text/csv" in response.headers.get("content-type", "")

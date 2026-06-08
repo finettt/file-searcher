@@ -120,11 +120,19 @@ def create_app(
 
     qdrant = QdrantIndex(url=qdrant_url, collection=qdrant_collection)
 
-    _rebuilding = False
-    _rebuild_lock = False
-    _background_tasks: set[asyncio.Task] = set()
-
     app = FastAPI(title="File Searcher")
+    app.state._rebuilding = False
+    app.state._rebuild_lock = False
+    app.state._background_tasks: set[asyncio.Task] = set()
+    # Use a closure to access mutable state
+    def get_rebuilding():
+        return app.state._rebuilding
+    def get_rebuild_lock():
+        return app.state._rebuild_lock
+    def set_rebuilding(val):
+        app.state._rebuilding = val
+    def set_rebuild_lock(val):
+        app.state._rebuild_lock = val
     app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
     # ── Helpers ─────────────────────────────────────────────
@@ -150,12 +158,11 @@ def create_app(
     # ── Background rebuild runner ───────────────────────────
 
     async def _run_rebuild(selective_paths: list[str] | None = None):
-        nonlocal _rebuilding, _rebuild_lock
-        if _rebuild_lock:
+        if get_rebuild_lock():
             log.debug("Rebuild requested but lock held — ignoring")
             return
-        _rebuild_lock = True
-        _rebuilding = True
+        set_rebuild_lock(True)
+        set_rebuilding(True)
         if selective_paths:
             log.info("Selective rebuild started for %d path(s)", len(selective_paths))
         else:
@@ -225,8 +232,8 @@ def create_app(
                 await asyncio.sleep(0)
             await worker
         finally:
-            _rebuilding = False
-            _rebuild_lock = False
+            set_rebuilding(False)
+            set_rebuild_lock(False)
 
     # ── Routes ──────────────────────────────────────────────
 
@@ -254,7 +261,7 @@ def create_app(
             return JSONResponse(
                 content={
                     "stale": True,
-                    "building": _rebuilding,
+                    "building": get_rebuilding(),
                     "info": "No index built yet",
                     "filebrowser_url": filebrowser_url,
                 }
@@ -265,7 +272,7 @@ def create_app(
         return JSONResponse(
             content={
                 "stale": stale,
-                "building": _rebuilding,
+                "building": get_rebuilding(),
                 "info": info_str,
                 "filebrowser_url": filebrowser_url,
             }
@@ -373,11 +380,11 @@ def create_app(
     @app.post("/api/rebuild")
     async def api_rebuild():
         """Trigger a full index rebuild."""
-        if _rebuilding:
+        if get_rebuilding():
             return JSONResponse(status_code=409, content={"detail": "Rebuild already in progress"})
         task = asyncio.create_task(_run_rebuild(None))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        app.state._background_tasks.add(task)
+        task.add_done_callback(app.state._background_tasks.discard)
         return JSONResponse(content={"status": "started"})
 
     @app.post("/api/rebuild-selective")
@@ -386,14 +393,14 @@ def create_app(
 
         Body: {"paths": ["relative/path1", "relative/dir2/"]}
         """
-        if _rebuilding:
+        if get_rebuilding():
             return JSONResponse(status_code=409, content={"detail": "Rebuild already in progress"})
         paths = body.get("paths", [])
         if not paths:
             return JSONResponse(status_code=400, content={"detail": "No paths provided"})
         task = asyncio.create_task(_run_rebuild(paths))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        app.state._background_tasks.add(task)
+        task.add_done_callback(app.state._background_tasks.discard)
         return JSONResponse(content={"status": "started", "paths": paths})
 
     @app.get("/api/file")

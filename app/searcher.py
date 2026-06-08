@@ -53,8 +53,11 @@ def do_search(
     client = build_client(api_key, base_url)
 
     embed_t0 = time.monotonic()
-    query_emb = embed_texts(client, model, [query], batch_size=1)[0]
-    query_emb = l2_normalize_vector(query_emb)
+    embeddings = embed_texts(client, model, [query], batch_size=1)
+    if not embeddings.size:
+        log.warning("No embeddings returned for query")
+        return []
+    query_emb = l2_normalize_vector(embeddings[0])
     embed_dt = time.monotonic() - embed_t0
     log.debug(
         "query embedded  model=%s dim=%d time=%.3fs",
