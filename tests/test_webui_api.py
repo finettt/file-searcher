@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import httpx
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -241,7 +240,5 @@ class TestWebUIApp:
             return_value=mock_response,
         ):
             client = TestClient(app)
-            response = client.post(
-                "/api/rebuild-selective", json={"paths": ["file.txt"]}
-            )
+            response = client.post("/api/rebuild-selective", json={"paths": ["file.txt"]})
             assert response.status_code == 200

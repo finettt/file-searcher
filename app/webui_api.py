@@ -102,11 +102,7 @@ def create_webui_app(
             url = f"{url}?{request.url.query}"
 
         body = await request.body()
-        headers = {
-            k: v
-            for k, v in request.headers.items()
-            if k.lower() not in ("host", "content-length")
-        }
+        headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
 
         try:
             upstream = await http_client.request(
@@ -128,9 +124,7 @@ def create_webui_app(
 
         # Relay response headers (strip hop-by-hop headers)
         _excluded = {"transfer-encoding", "connection", "keep-alive", "te", "trailers", "upgrade"}
-        relay_headers = {
-            k: v for k, v in upstream.headers.items() if k.lower() not in _excluded
-        }
+        relay_headers = {k: v for k, v in upstream.headers.items() if k.lower() not in _excluded}
 
         return Response(
             content=upstream.content,
@@ -180,6 +174,7 @@ def create_webui_app(
 
         try:
             async with ws_connect(upstream_ws_url) as upstream_ws:
+
                 async def browser_to_upstream():
                     """Forward messages from browser to indexer (keepalive / ping)."""
                     try:

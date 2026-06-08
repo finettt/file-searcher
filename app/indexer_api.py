@@ -14,8 +14,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import utils
-from . import cache
+from . import cache, utils
 from .config import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_CHUNK_SIZE,
