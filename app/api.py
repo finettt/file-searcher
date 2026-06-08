@@ -7,10 +7,12 @@ import csv
 import io
 import os
 from collections import deque
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
@@ -32,6 +34,11 @@ from .config import (
 from .extractors import extract_text
 from .indexer import build_index, build_index_selective
 from .logging_config import get_logger
+from .models import (
+    ExportRequest,
+    RebuildSelectiveRequest,
+    SearchRequest,
+)
 from .progress import ProgressTracker
 from .searcher import do_search
 
@@ -42,11 +49,17 @@ log = get_logger(__name__)
 
 
 class ConnectionManager:
-    """Manage WebSocket clients subscribed to progress events."""
+    """Manage WebSocket clients subscribed to progress events.
+
+    Each app instance gets its own manager (no global singleton).
+    Uses an asyncio.Event for efficient, event-driven broadcasting
+    instead of busy-polling.
+    """
 
     def __init__(self) -> None:
         self.active: list[WebSocket] = []
         self._queue: deque[dict] = deque(maxlen=200)
+        self._event = asyncio.Event()
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
@@ -58,11 +71,19 @@ class ConnectionManager:
 
     def enqueue(self, event: dict) -> None:
         self._queue.append(event)
+        self._event.set()
 
-    async def broadcast(self) -> None:
+    async def wait_and_broadcast(self) -> None:
+        """Wait for enqueued events, then broadcast to all clients."""
+        await self._event.wait()
+        self._event.clear()
+        await self._broadcast()
+
+    async def _broadcast(self) -> None:
         if not self._queue:
             return
-        payloads = [self._queue.popleft() for _ in range(len(self._queue))]
+        payloads = list(self._queue)
+        self._queue.clear()
         dead: list[WebSocket] = []
         for ws in self.active:
             try:
@@ -74,7 +95,167 @@ class ConnectionManager:
             self.disconnect(ws)
 
 
-manager = ConnectionManager()
+# ── Application state ─────────────────────────────────────────
+
+
+@dataclass
+class AppState:
+    """All application configuration and runtime state in one place.
+
+    Replaces 20+ closure-captured variables with a single structured object
+    accessible via ``request.app.state.ctx``.
+    """
+
+    data_dir: Path
+    exts: set[str]
+    model: str
+    api_key: str
+    base_url: str | None
+    ocr_api_key: str | None
+    ocr_base_url: str | None
+    ocr_model: str | None
+    qdrant: QdrantIndex
+    host: str
+    port: int
+    batch_size: int
+    chunk_size: int
+    overlap: int
+    top_k: int
+    by_chunk: bool
+    snippet_chars: int
+    lexical_weight: float
+    filebrowser_url: str
+    html_template: str
+
+    # Runtime mutable state
+    rebuilding: bool = False
+    rebuild_lock: bool = False
+    background_tasks: set[asyncio.Task] = field(default_factory=set)
+    manager: ConnectionManager = field(default_factory=ConnectionManager)
+
+
+def _get_ctx(request: Request) -> AppState:
+    """Retrieve the AppState from the request."""
+    return request.app.state.ctx
+
+
+# ── Helpers ───────────────────────────────────────────────────
+
+
+def _is_stale(ctx: AppState) -> bool:
+    info = ctx.qdrant.get_info()
+    fs_hash = info.get("fs_hash", "")
+    if not fs_hash:
+        return True
+    try:
+        return utils.compute_fs_hash(ctx.data_dir, ctx.exts) != fs_hash
+    except Exception:
+        return True
+
+
+def _load_html_template(name: str = "index.html") -> str:
+    path = TEMPLATE_DIR / name
+    if not path.exists():
+        return "<h1>Template not found</h1>"
+    return path.read_text(encoding="utf-8")
+
+
+# ── Background rebuild runner ─────────────────────────────────
+
+
+async def _run_rebuild(ctx: AppState, selective_paths: list[str] | None = None) -> None:
+    if ctx.rebuild_lock:
+        log.debug("Rebuild requested but lock held — ignoring")
+        return
+    ctx.rebuild_lock = True
+    ctx.rebuilding = True
+    if selective_paths:
+        log.info("Selective rebuild started for %d path(s)", len(selective_paths))
+    else:
+        log.info("Full rebuild started")
+
+    progress = ProgressTracker()
+    loop = asyncio.get_running_loop()
+    event_queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+    def run_build() -> None:
+        try:
+            if selective_paths:
+                gen = build_index_selective(
+                    ctx.data_dir,
+                    selective_paths,
+                    qdrant=ctx.qdrant,
+                    model=ctx.model,
+                    api_key=ctx.api_key,
+                    base_url=ctx.base_url,
+                    ocr_api_key=ctx.ocr_api_key,
+                    ocr_base_url=ctx.ocr_base_url,
+                    ocr_model=ctx.ocr_model,
+                    extensions=ctx.exts,
+                    chunk_size=ctx.chunk_size,
+                    overlap=ctx.overlap,
+                    batch_size=ctx.batch_size,
+                    progress=progress,
+                )
+            else:
+                gen = build_index(
+                    ctx.data_dir,
+                    qdrant=ctx.qdrant,
+                    model=ctx.model,
+                    api_key=ctx.api_key,
+                    base_url=ctx.base_url,
+                    ocr_api_key=ctx.ocr_api_key,
+                    ocr_base_url=ctx.ocr_base_url,
+                    ocr_model=ctx.ocr_model,
+                    extensions=ctx.exts,
+                    chunk_size=ctx.chunk_size,
+                    overlap=ctx.overlap,
+                    batch_size=ctx.batch_size,
+                    progress=progress,
+                )
+
+            for evt in gen:
+                loop.call_soon_threadsafe(event_queue.put_nowait, evt.__dict__)
+        except Exception as e:
+            log.error("Rebuild failed: %s", e, exc_info=True)
+            loop.call_soon_threadsafe(
+                event_queue.put_nowait,
+                progress.error(str(e)).__dict__,
+            )
+        finally:
+            loop.call_soon_threadsafe(event_queue.put_nowait, None)
+
+    worker = asyncio.create_task(asyncio.to_thread(run_build))
+
+    try:
+        while True:
+            payload = await event_queue.get()
+            if payload is None:
+                break
+            ctx.manager.enqueue(payload)
+            # Yield to event loop so WS messages flush
+            await asyncio.sleep(0)
+        await worker
+    finally:
+        ctx.rebuilding = False
+        ctx.rebuild_lock = False
+
+
+# ── Lifespan (graceful shutdown) ──────────────────────────────
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Manage app startup and shutdown."""
+    yield
+    # Graceful shutdown: cancel and await all background tasks
+    ctx: AppState = app.state.ctx
+    if ctx.background_tasks:
+        log.info("Shutting down: cancelling %d background task(s)", len(ctx.background_tasks))
+        for task in ctx.background_tasks:
+            task.cancel()
+        await asyncio.gather(*ctx.background_tasks, return_exceptions=True)
+        ctx.background_tasks.clear()
 
 
 # ── App factory ───────────────────────────────────────────────
@@ -120,138 +301,46 @@ def create_app(
 
     qdrant = QdrantIndex(url=qdrant_url, collection=qdrant_collection)
 
-    app = FastAPI(title="File Searcher")
-    app.state._rebuilding = False
-    app.state._rebuild_lock = False
-    app.state._background_tasks: set[asyncio.Task] = set()
+    ctx = AppState(
+        data_dir=data_dir,
+        exts=exts,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        ocr_api_key=ocr_api_key,
+        ocr_base_url=ocr_base_url,
+        ocr_model=ocr_model,
+        qdrant=qdrant,
+        host=host,
+        port=port,
+        batch_size=batch_size,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        top_k=top_k,
+        by_chunk=by_chunk,
+        snippet_chars=snippet_chars,
+        lexical_weight=lexical_weight,
+        filebrowser_url=filebrowser_url,
+        html_template=_load_html_template("index.html"),
+    )
+
+    app = FastAPI(title="File Searcher", lifespan=_lifespan)
+    app.state.ctx = ctx
     app.add_middleware(CORSMiddleware, allow_origins=["*"])
-
-    # Closures to access mutable rebuild state
-
-    def get_rebuilding():
-        return app.state._rebuilding
-
-    def get_rebuild_lock():
-        return app.state._rebuild_lock
-
-    def set_rebuilding(val):
-        app.state._rebuilding = val
-
-    def set_rebuild_lock(val):
-        app.state._rebuild_lock = val
-
-    # ── Helpers ─────────────────────────────────────────────
-
-    def is_stale() -> bool:
-        info = qdrant.get_info()
-        fs_hash = info.get("fs_hash", "")
-        if not fs_hash:
-            return True
-        try:
-            return utils.compute_fs_hash(data_dir, exts) != fs_hash
-        except Exception:
-            return True
-
-    def load_html_template(name: str = "index.html") -> str:
-        path = TEMPLATE_DIR / name
-        if not path.exists():
-            return "<h1>Template not found</h1>"
-        return path.read_text(encoding="utf-8")
-
-    html_template = load_html_template("index.html")
-
-    # ── Background rebuild runner ───────────────────────────
-
-    async def _run_rebuild(selective_paths: list[str] | None = None):
-        if get_rebuild_lock():
-            log.debug("Rebuild requested but lock held — ignoring")
-            return
-        set_rebuild_lock(True)
-        set_rebuilding(True)
-        if selective_paths:
-            log.info("Selective rebuild started for %d path(s)", len(selective_paths))
-        else:
-            log.info("Full rebuild started")
-
-        progress = ProgressTracker()
-        loop = asyncio.get_running_loop()
-        event_queue: asyncio.Queue[dict | None] = asyncio.Queue()
-
-        def run_build() -> None:
-            try:
-                if selective_paths:
-                    gen = build_index_selective(
-                        data_dir,
-                        selective_paths,
-                        qdrant=qdrant,
-                        model=model,
-                        api_key=api_key,
-                        base_url=base_url,
-                        ocr_api_key=ocr_api_key,
-                        ocr_base_url=ocr_base_url,
-                        ocr_model=ocr_model,
-                        extensions=exts,
-                        chunk_size=chunk_size,
-                        overlap=overlap,
-                        batch_size=batch_size,
-                        progress=progress,
-                    )
-                else:
-                    gen = build_index(
-                        data_dir,
-                        qdrant=qdrant,
-                        model=model,
-                        api_key=api_key,
-                        base_url=base_url,
-                        ocr_api_key=ocr_api_key,
-                        ocr_base_url=ocr_base_url,
-                        ocr_model=ocr_model,
-                        extensions=exts,
-                        chunk_size=chunk_size,
-                        overlap=overlap,
-                        batch_size=batch_size,
-                        progress=progress,
-                    )
-
-                for evt in gen:
-                    loop.call_soon_threadsafe(event_queue.put_nowait, evt.__dict__)
-            except Exception as e:
-                log.error("Rebuild failed: %s", e, exc_info=True)
-                loop.call_soon_threadsafe(
-                    event_queue.put_nowait,
-                    progress.error(str(e)).__dict__,
-                )
-            finally:
-                loop.call_soon_threadsafe(event_queue.put_nowait, None)
-
-        worker = asyncio.create_task(asyncio.to_thread(run_build))
-
-        try:
-            while True:
-                payload = await event_queue.get()
-                if payload is None:
-                    break
-                manager.enqueue(payload)
-                await manager.broadcast()
-                # Yield to event loop so WS messages flush
-                await asyncio.sleep(0)
-            await worker
-        finally:
-            set_rebuilding(False)
-            set_rebuild_lock(False)
 
     # ── Routes ──────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
-    async def root():
-        return html_template
+    async def root(request: Request):
+        return _get_ctx(request).html_template
 
     @app.get("/api/health")
-    async def api_health():
+    async def api_health(request: Request):
         """Healthcheck endpoint for Docker / load balancers."""
-        if not qdrant.collection_exists():
+        ctx = _get_ctx(request)
+        if not ctx.qdrant.collection_exists():
             return JSONResponse(status_code=503, content={"status": "no_index"})
-        info = qdrant.get_info()
+        info = ctx.qdrant.get_info()
         return JSONResponse(
             content={
                 "status": "ok",
@@ -261,37 +350,36 @@ def create_app(
         )
 
     @app.get("/api/status")
-    async def api_status():
-        if not qdrant.collection_exists():
+    async def api_status(request: Request):
+        ctx = _get_ctx(request)
+        if not ctx.qdrant.collection_exists():
             return JSONResponse(
                 content={
                     "stale": True,
-                    "building": get_rebuilding(),
+                    "building": ctx.rebuilding,
                     "info": "No index built yet",
-                    "filebrowser_url": filebrowser_url,
+                    "filebrowser_url": ctx.filebrowser_url,
                 }
             )
-        info = qdrant.get_info()
-        stale = is_stale()
+        info = ctx.qdrant.get_info()
+        stale = _is_stale(ctx)
         info_str = f"{info.get('model', '?')} | {info.get('points_count', 0)} chunks | {info.get('root', '?')}"
         return JSONResponse(
             content={
                 "stale": stale,
-                "building": get_rebuilding(),
+                "building": ctx.rebuilding,
                 "info": info_str,
-                "filebrowser_url": filebrowser_url,
+                "filebrowser_url": ctx.filebrowser_url,
             }
         )
 
     @app.get("/api/diff")
-    async def api_diff():
-        """Compare current filesystem against stored index.
+    async def api_diff(request: Request):
+        """Compare current filesystem against stored index."""
+        ctx = _get_ctx(request)
+        current_hashes = utils.compute_fs_hash_map(ctx.data_dir, ctx.exts)
 
-        Returns lists of added, removed, and modified files.
-        """
-        current_hashes = utils.compute_fs_hash_map(data_dir, exts)
-
-        if not qdrant.collection_exists():
+        if not ctx.qdrant.collection_exists():
             return JSONResponse(
                 content={
                     "has_index": False,
@@ -302,13 +390,13 @@ def create_app(
                 }
             )
 
-        stored_hashes = qdrant.get_all_file_hashes()
+        stored_hashes = ctx.qdrant.get_all_file_hashes()
         if not stored_hashes:
             return JSONResponse(
                 content={
                     "has_index": True,
                     "can_diff": False,
-                    "stale": is_stale(),
+                    "stale": _is_stale(ctx),
                     "info": "Index predates per-file hashing. Full rebuild needed.",
                 }
             )
@@ -334,84 +422,75 @@ def create_app(
         )
 
     @app.post("/api/search")
-    async def api_search(body: dict):
-        query = body.get("query", "").strip()
+    async def api_search(body: SearchRequest, request: Request):
+        ctx = _get_ctx(request)
+        query = body.query.strip()
         if not query:
             return JSONResponse(status_code=400, content={"detail": "Empty query"})
 
-        try:
-            top_k_val = int(body.get("top_k", top_k))
-        except (TypeError, ValueError):
-            top_k_val = top_k
-        top_k_val = max(1, min(top_k_val, 200))
+        top_k_val = max(1, min(body.top_k, 200))
 
-        by_chunk_val = bool(body.get("by_chunk", by_chunk))
-        ext_filter = body.get("ext_filter") or None
-
-        if not qdrant.collection_exists() or qdrant.count() == 0:
+        if not ctx.qdrant.collection_exists() or ctx.qdrant.count() == 0:
             # Auto-build on first search
-            await _run_rebuild(None)
+            await _run_rebuild(ctx, None)
 
-        if not qdrant.collection_exists() or qdrant.count() == 0:
+        if not ctx.qdrant.collection_exists() or ctx.qdrant.count() == 0:
             return JSONResponse(status_code=503, content={"detail": "Index build failed"})
 
         try:
             res = do_search(
-                qdrant,
+                ctx.qdrant,
                 query,
-                model=model,
-                api_key=api_key,
-                base_url=base_url,
+                model=ctx.model,
+                api_key=ctx.api_key,
+                base_url=ctx.base_url,
                 top_k=top_k_val,
-                by_chunk=by_chunk_val,
-                snippet_chars=snippet_chars,
-                lexical_weight=lexical_weight,
-                ext_filter=ext_filter,
+                by_chunk=body.by_chunk,
+                snippet_chars=ctx.snippet_chars,
+                lexical_weight=ctx.lexical_weight,
+                ext_filter=body.ext_filter,
             )
         except Exception as e:
             log.error("Search error: %s", e, exc_info=True)
             return JSONResponse(status_code=500, content={"detail": str(e)})
 
-        info = qdrant.get_info()
+        info = ctx.qdrant.get_info()
         return JSONResponse(
             content={
                 "results": res,
                 "index_info": f"{info.get('model', '?')} | {info.get('points_count', 0)} chunks",
-                "index_stale": is_stale(),
-                "filebrowser_url": filebrowser_url,
+                "index_stale": _is_stale(ctx),
+                "filebrowser_url": ctx.filebrowser_url,
             }
         )
 
     @app.post("/api/rebuild")
-    async def api_rebuild():
+    async def api_rebuild(request: Request):
         """Trigger a full index rebuild."""
-        if get_rebuilding():
+        ctx = _get_ctx(request)
+        if ctx.rebuilding:
             return JSONResponse(status_code=409, content={"detail": "Rebuild already in progress"})
-        task = asyncio.create_task(_run_rebuild(None))
-        app.state._background_tasks.add(task)
-        task.add_done_callback(app.state._background_tasks.discard)
+        task = asyncio.create_task(_run_rebuild(ctx, None))
+        ctx.background_tasks.add(task)
+        task.add_done_callback(ctx.background_tasks.discard)
         return JSONResponse(content={"status": "started"})
 
     @app.post("/api/rebuild-selective")
-    async def api_rebuild_selective(body: dict):
-        """Re-index specific files or directories.
-
-        Body: {"paths": ["relative/path1", "relative/dir2/"]}
-        """
-        if get_rebuilding():
+    async def api_rebuild_selective(body: RebuildSelectiveRequest, request: Request):
+        """Re-index specific files or directories."""
+        ctx = _get_ctx(request)
+        if ctx.rebuilding:
             return JSONResponse(status_code=409, content={"detail": "Rebuild already in progress"})
-        paths = body.get("paths", [])
-        if not paths:
-            return JSONResponse(status_code=400, content={"detail": "No paths provided"})
-        task = asyncio.create_task(_run_rebuild(paths))
-        app.state._background_tasks.add(task)
-        task.add_done_callback(app.state._background_tasks.discard)
-        return JSONResponse(content={"status": "started", "paths": paths})
+        task = asyncio.create_task(_run_rebuild(ctx, body.paths))
+        ctx.background_tasks.add(task)
+        task.add_done_callback(ctx.background_tasks.discard)
+        return JSONResponse(content={"status": "started", "paths": body.paths})
 
     @app.get("/api/file")
-    async def api_file(path: str):
-        full_path = (data_dir / path).resolve()
-        if not full_path.is_relative_to(data_dir):
+    async def api_file(path: str, request: Request):
+        ctx = _get_ctx(request)
+        full_path = (ctx.data_dir / path).resolve()
+        if not full_path.is_relative_to(ctx.data_dir):
             return JSONResponse(status_code=403, content={"detail": "Access denied"})
         if not full_path.exists():
             return JSONResponse(status_code=404, content={"detail": "File not found"})
@@ -432,37 +511,32 @@ def create_app(
         )
 
     @app.post("/api/export")
-    async def api_export(body: dict):
-        items = body.get("results", [])
-        fmt = body.get("format", "json")
-        if fmt == "csv":
+    async def api_export(body: ExportRequest):
+        if body.format == "csv":
             out = io.StringIO()
             fieldnames = ["rank", "path", "score", "sem", "lex", "chunk_id", "snippet"]
             writer = csv.DictWriter(out, fieldnames=fieldnames, extrasaction="ignore")
             writer.writeheader()
-            writer.writerows(items)
+            writer.writerows(body.results)
             return Response(
                 content=out.getvalue(),
                 media_type="text/csv",
                 headers={"Content-Disposition": "attachment; filename=results.csv"},
             )
-        return JSONResponse(content=items)
+        return JSONResponse(content=body.results)
 
     @app.websocket("/ws/progress")
     async def ws_progress(websocket: WebSocket):
         """WebSocket endpoint for real-time index build progress."""
-        await manager.connect(websocket)
+        ctx = websocket.app.state.ctx
+        await ctx.manager.connect(websocket)
         try:
             while True:
-                await manager.broadcast()
-                await asyncio.sleep(0.15)
+                await ctx.manager.wait_and_broadcast()
         except WebSocketDisconnect:
-            manager.disconnect(websocket)
+            ctx.manager.disconnect(websocket)
         except Exception:
-            manager.disconnect(websocket)
-
-    app.state.host = host
-    app.state.port = port
+            ctx.manager.disconnect(websocket)
 
     return app
 
@@ -472,9 +546,8 @@ def create_app(
 
 def run_app(app: FastAPI) -> None:
     """Start the uvicorn server."""
-    host = getattr(app.state, "host", DEFAULT_HOST)
-    port = getattr(app.state, "port", DEFAULT_PORT)
-    log.info("Web UI → http://%s:%s", host, port)
-    log.info("FileBrowser → %s", os.getenv("FILEBROWSER_URL", "(not configured)"))
-    log.info("Qdrant → %s", os.getenv("QDRANT_URL", "(not configured)"))
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    ctx: AppState = app.state.ctx
+    log.info("Web UI → http://%s:%s", ctx.host, ctx.port)
+    log.info("FileBrowser → %s", ctx.filebrowser_url or "(not configured)")
+    log.info("Qdrant → %s", ctx.qdrant.url)
+    uvicorn.run(app, host=ctx.host, port=ctx.port, log_level="info")

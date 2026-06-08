@@ -9,7 +9,7 @@ from pathlib import Path
 
 DEFAULT_EXTENSIONS: set[str] = {".pdf", ".txt", ".docx", ".xlsx", ".xls"}
 
-SPECIAL_FILENAMES: set[str] = {} # Specify filenames if required. By default we index only documents.
+SPECIAL_FILENAMES: set[str] = set()  # Specify filenames if required. By default we index only documents.
 
 SKIP_DIRNAMES: set[str] = {
     "node_modules",

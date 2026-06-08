@@ -160,15 +160,15 @@ class TestCreateApp:
                 api_key="test-key",
             )
 
-            # Simulate building state
-            app.state._rebuilding = True
-            app.state._rebuild_lock = True
+            # Simulate building state via AppState
+            app.state.ctx.rebuilding = True
+            app.state.ctx.rebuild_lock = True
             client = TestClient(app)
             response = client.post("/api/rebuild")
             assert response.status_code == 409
 
     def test_rebuild_selective_no_paths(self):
-        """Test selective rebuild returns error with no paths."""
+        """Test selective rebuild returns 422 with no paths (Pydantic validation)."""
         mock_qdrant = MagicMock()
         mock_qdrant.collection_exists.return_value = False
 
@@ -182,8 +182,27 @@ class TestCreateApp:
             )
 
             client = TestClient(app)
+            # Pydantic requires 'paths' with min_length=1, so {} returns 422
             response = client.post("/api/rebuild-selective", json={})
-            assert response.status_code == 400
+            assert response.status_code == 422
+
+    def test_rebuild_selective_empty_paths(self):
+        """Test selective rebuild returns 422 with empty paths list."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.post("/api/rebuild-selective", json={"paths": []})
+            assert response.status_code == 422
 
     def test_diff_no_index(self):
         """Test diff endpoint when no index exists."""
@@ -226,3 +245,45 @@ class TestCreateApp:
             )
             assert response.status_code == 200
             assert "text/csv" in response.headers.get("content-type", "")
+
+    def test_file_path_traversal_rejected(self):
+        """Test that path traversal attempts are rejected."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = False
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            response = client.get("/api/file", params={"path": "../../../etc/passwd"})
+            assert response.status_code == 403
+
+    def test_search_validates_top_k(self):
+        """Test that search validates top_k bounds via Pydantic."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = True
+        mock_qdrant.count.return_value = 10
+
+        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
+            from app.api import create_app
+
+            app = create_app(
+                folder=str(self.tmp_path),
+                model="test-model",
+                api_key="test-key",
+            )
+
+            client = TestClient(app)
+            # top_k=0 should fail Pydantic validation (ge=1)
+            response = client.post("/api/search", json={"query": "test", "top_k": 0})
+            assert response.status_code == 422
+
+            # top_k=999 should fail Pydantic validation (le=200)
+            response = client.post("/api/search", json={"query": "test", "top_k": 999})
+            assert response.status_code == 422
