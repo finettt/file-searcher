@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+.uv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project artifacts
+semantic_index.pkl
+*.pkl
+error.txt
+*.bak
+
+# Models (large binaries — tracked via Git LFS or not at all)
+models/*.gguf
+
+# FileBrowser runtime
+filebrowser/filebrowser.db
+
+# Docker
+*.log
+
+# Environment (may contain secrets)
+.env

@@ -1,0 +1,118 @@
+services:
+  # 0. Qdrant vector database
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    networks:
+      - app-network
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # 1. OCR model (CPU)
+  llamacpp-ocr:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "8002:8000"
+    networks:
+      - app-network
+    volumes:
+      - ./models:/models
+    command: >
+      --host 0.0.0.0 --port 8000
+      -m /models/qwen3.5-4b-Q4_K_M.gguf
+      --mmproj /models/mmproj-F16.gguf
+      -c 8192 -ngl 99 -fa on -np 1 --cache-ram 0
+      --image-min-tokens 1024 --image-max-tokens 2048 --reasoning off
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  # 2. Embedding model (CPU)
+  llamacpp:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "8000:8000"
+    networks:
+      - app-network
+    volumes:
+      - ./models:/models
+    command: ["--host", "0.0.0.0", "--port", "8000", "-m", "/models/nomic-embed.gguf", "-ngl", "99", "--embedding", "--alias", "${EMBEDDING_MODEL}", "--ubatch-size", "2048", "--batch-size", "2048"]
+    restart: unless-stopped
+    depends_on:
+      llamacpp-ocr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # 3. FileBrowser (file preview / download)
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    networks:
+      - app-network
+    ports:
+      - "8080:80"
+    volumes:
+      - ${DATA_DIR}:/srv:ro
+      - ./filebrowser/filebrowser.db:/database.db
+      - ./filebrowser/settings.json:/config/settings.json
+    environment:
+      - FB_NOAUTH=true
+    restart: unless-stopped
+    depends_on:
+      llamacpp:
+        condition: service_healthy
+
+  # 4. Semantic search web UI
+  semantic-search:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: semantic-file-search
+    container_name: semantic-search
+    ports:
+      - "8001:8001"
+    networks:
+      - app-network
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL:-http://llamacpp:8000/v1}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - OCR_API_KEY=${OCR_API_KEY:-}
+      - OCR_LLM_BASE_URL=${OCR_LLM_BASE_URL:-http://llamacpp-ocr:8000/v1}
+      - OCR_LLM_MODEL=${OCR_LLM_MODEL:-qwen3.5-4b}
+      - FILEBROWSER_URL=${FILEBROWSER_URL:-http://filebrowser:80}
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
+      - QDRANT_COLLECTION=${QDRANT_COLLECTION:-file_searcher}
+    volumes:
+      - ${DATA_DIR}:/data:ro
+    command: ["/data", "--port", "8001", "--filebrowser-url", "${FILEBROWSER_URL:-http://filebrowser:80}", "--verbose"]
+    restart: unless-stopped
+    depends_on:
+      llamacpp:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  qdrant_data:

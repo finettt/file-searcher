@@ -1,0 +1,23 @@
+{
+  "port": 80,
+  "baseURL": "",
+  "address": "0.0.0.0",
+  "log": "stdout",
+  "database": "/database.db",
+  "root": "/srv",
+  "noAuth": true,
+  "locale": "ru",
+  "perm": {
+    "admin": false,
+    "execute": false,
+    "create": false,
+    "rename": false,
+    "modify": false,
+    "delete": false,
+    "share": true,
+    "download": true
+  },
+  "commands": [],
+  "shell": "",
+  "rules": []
+}

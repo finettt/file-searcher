@@ -1,0 +1,52 @@
+[project]
+name = "file-searcher"
+version = "0.1.0"
+description = "Semantic file searcher with hybrid BM25 + embedding search"
+requires-python = ">=3.12"
+dependencies = [
+    "openai==1.58.1",
+    "numpy==1.26.4",
+    "pypdf==5.1.0",
+    "python-docx==1.1.2",
+    "openpyxl==3.1.5",
+    "xlrd==2.0.1",
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "pdf2image==1.17.0",
+    "Pillow==11.0.0",
+    "qdrant-client>=1.12.0",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.8.0"]
+
+[project.scripts]
+file-searcher = "main:main"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "S",    # flake8-bandit (security)
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "S301",  # pickle — we still reference it in legacy code comments
+    "S603",  # subprocess without shell=True
+    "S104",  # binding to 0.0.0.0 — intentional for containers
+    "E501",  # line too long (handled by formatter)
+    "RUF001", # Cyrillic in regex — intentional (bilingual tokenizer)
+    "RUF002", # Cyrillic/special chars in docstrings — intentional
+    "RUF012", # mutable class attrs — false positive on logging formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"main.py" = ["S105"]  # hardcoded password false positives on API key args

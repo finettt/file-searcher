@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>File Searcher</title>
+<style>
+:root {
+  --bg0: #0f172a; --bg1: #1e293b; --bg2: #334155; --bg3: #475569;
+  --accent: #38bdf8; --accent2: #7dd3fc;
+  --tx0: #f1f5f9; --tx1: #cbd5e1; --tx2: #94a3b8; --tx3: #64748b;
+  --danger: #f87171; --warn: #fbbf24; --ok: #34d399;
+  --r: 10px; --shadow: 0 8px 32px rgba(0,0,0,.45); --trans: .18s ease;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg0);color:var(--tx0);min-height:100vh;overflow-x:hidden}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--bg0)}
+::-webkit-scrollbar-thumb{background:var(--bg2);border-radius:3px}
+
+/* ── Header ─────────────────────────────────────── */
+.header{position:sticky;top:0;z-index:90;background:rgba(30,41,59,.85);backdrop-filter:blur(14px);border-bottom:1px solid var(--bg2)}
+.header-inner{max-width:860px;margin:0 auto;display:flex;align-items:center;gap:.75rem;padding:.75rem 1.25rem;flex-wrap:wrap}
+.logo{display:flex;align-items:center;gap:.5rem;font-size:1.15rem;font-weight:700;color:var(--accent);white-space:nowrap;text-decoration:none}
+.logo svg{width:22px;height:22px;flex-shrink:0}
+.spacer{flex:1}
+.pill{font-size:.72rem;padding:.2rem .65rem;border-radius:20px;background:var(--bg2);color:var(--tx2);white-space:nowrap;transition:background var(--trans),color var(--trans)}
+.pill.ok{background:rgba(52,211,153,.12);color:var(--ok)}
+.pill.stale{background:rgba(251,191,36,.12);color:var(--warn)}
+.pill.building{background:rgba(56,189,248,.12);color:var(--accent);animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+.nav-tabs{display:flex;gap:0}
+.nav-tab{padding:.4rem 1rem;border-radius:8px 8px 0 0;font-size:.82rem;font-weight:600;cursor:pointer;color:var(--tx2);background:transparent;border:1px solid transparent;border-bottom:none;transition:all var(--trans)}
+.nav-tab:hover{color:var(--tx0);background:var(--bg2)}
+.nav-tab.active{color:var(--accent);border-color:var(--bg2);background:var(--bg1)}
+.btn{display:inline-flex;align-items:center;gap:.35rem;padding:.45rem 1rem;border-radius:8px;border:none;font-weight:600;cursor:pointer;font-size:.82rem;transition:all var(--trans)}
+.btn svg{width:14px;height:14px;flex-shrink:0}
+.btn-primary{background:var(--accent);color:var(--bg0)}
+.btn-primary:hover:not(:disabled){background:var(--accent2)}
+.btn-ghost{background:transparent;color:var(--tx2);border:1px solid var(--bg2)}
+.btn-ghost:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+/* ── Main ───────────────────────────────────────── */
+.main{max-width:860px;margin:0 auto;padding:1.5rem 1.25rem 4rem}
+.page{display:none}
+.page.active{display:block}
+
+/* ── Search ─────────────────────────────────────── */
+.search-wrap{position:relative;margin-bottom:1rem}
+.search-wrap .ico{position:absolute;left:1rem;top:50%;transform:translateY(-50%);width:18px;height:18px;color:var(--tx3);pointer-events:none}
+.search-input{width:100%;padding:.9rem 7rem .9rem 2.9rem;border-radius:var(--r);border:2px solid var(--bg2);background:var(--bg1);color:var(--tx0);font-size:1rem;outline:none;transition:border-color var(--trans),box-shadow var(--trans)}
+.search-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(56,189,248,.15)}
+.search-input::placeholder{color:var(--tx3)}
+.search-btn{position:absolute;right:.5rem;top:50%;transform:translateY(-50%)}
+.kbd-hint{position:absolute;right:5.5rem;top:50%;transform:translateY(-50%);font-size:.68rem;color:var(--tx3);background:var(--bg2);padding:.1rem .4rem;border-radius:4px;pointer-events:none}
+.filters{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-bottom:1.25rem}
+.chip{display:inline-flex;align-items:center;gap:.3rem;padding:.3rem .7rem;border-radius:20px;background:var(--bg1);color:var(--tx2);font-size:.75rem;cursor:pointer;border:1px solid var(--bg2);transition:all var(--trans);user-select:none;white-space:nowrap}
+.chip:hover{border-color:var(--accent);color:var(--tx0)}
+.chip.active{background:rgba(56,189,248,.12);border-color:var(--accent);color:var(--accent)}
+.chip svg{width:12px;height:12px}
+select.fsel{background:var(--bg1);color:var(--tx2);border:1px solid var(--bg2);border-radius:20px;padding:.3rem .7rem;font-size:.75rem;outline:none;cursor:pointer;transition:border-color var(--trans)}
+select.fsel:hover,select.fsel:focus{border-color:var(--accent)}
+.ext-filter-wrap{display:flex;align-items:center;gap:.35rem;font-size:.75rem;color:var(--tx2)}
+.ext-input{background:var(--bg1);color:var(--tx0);border:1px solid var(--bg2);border-radius:6px;padding:.25rem .5rem;font-size:.75rem;width:110px;outline:none;transition:border-color var(--trans)}
+.ext-input:focus{border-color:var(--accent)}
+
+/* ── Results ────────────────────────────────────── */
+.results-meta{display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;color:var(--tx3);font-size:.78rem;min-height:1.2rem}
+.card{background:var(--bg1);border-radius:var(--r);padding:1.1rem 1.25rem;margin-bottom:.65rem;border:1px solid var(--bg2);transition:border-color var(--trans),transform var(--trans),box-shadow var(--trans);position:relative}
+.card:hover{border-color:var(--accent);transform:translateY(-1px);box-shadow:var(--shadow)}
+.card-top{display:flex;justify-content:space-between;align-items:flex-start;gap:.75rem;margin-bottom:.4rem}
+.card-path-row{display:flex;align-items:center;gap:.5rem;flex:1;min-width:0}
+.card-path{font-weight:600;color:var(--accent);word-break:break-all;font-size:.9rem;cursor:pointer;text-decoration:none;transition:color var(--trans)}
+.card-path:hover{color:var(--accent2);text-decoration:underline}
+.badges{display:flex;gap:.3rem;flex-shrink:0;flex-wrap:wrap}
+.badge{font-size:.67rem;padding:.15rem .45rem;border-radius:8px;font-weight:700;white-space:nowrap}
+.badge-score{background:rgba(56,189,248,.15);color:var(--accent)}
+.badge-ext{background:rgba(52,211,153,.1);color:var(--ok)}
+.badge-rank{background:rgba(148,163,184,.1);color:var(--tx2)}
+.card-meta{display:flex;gap:1rem;font-size:.72rem;color:var(--tx3);margin-bottom:.55rem;flex-wrap:wrap}
+.card-actions{display:flex;gap:.35rem;margin-bottom:.5rem;flex-wrap:wrap}
+.card-actions .abtn{display:inline-flex;align-items:center;gap:.25rem;padding:.2rem .55rem;border-radius:6px;font-size:.7rem;cursor:pointer;border:1px solid var(--bg2);background:var(--bg0);color:var(--tx2);transition:all var(--trans);text-decoration:none}
+.card-actions .abtn:hover{border-color:var(--accent);color:var(--accent)}
+.card-actions .abtn svg{width:12px;height:12px}
+.snip{color:var(--tx1);line-height:1.65;font-size:.875rem;white-space:pre-wrap;word-break:break-word;max-height:5.2em;overflow:hidden;transition:max-height .3s}
+.snip.open{max-height:none}
+.snip mark{background:rgba(56,189,248,.22);color:var(--tx0);border-radius:2px;padding:0 2px}
+.expand-btn{margin-top:.4rem;background:none;border:none;color:var(--accent);cursor:pointer;font-size:.75rem;padding:0;transition:color var(--trans)}
+.expand-btn:hover{color:var(--accent2)}
+.copy-btn{position:absolute;top:.75rem;right:.75rem;background:var(--bg2);border:none;border-radius:6px;padding:.2rem .45rem;color:var(--tx3);cursor:pointer;font-size:.7rem;transition:all var(--trans);opacity:0}
+.card:hover .copy-btn{opacity:1}
+.copy-btn:hover{background:var(--bg3);color:var(--tx0)}
+
+/* ── Diff page ──────────────────────────────────── */
+.diff-section{margin-bottom:1.5rem}
+.diff-section h3{font-size:.95rem;color:var(--tx1);margin-bottom:.5rem;display:flex;align-items:center;gap:.5rem}
+.diff-section h3 .count{font-size:.75rem;padding:.1rem .5rem;border-radius:10px;font-weight:700}
+.diff-section h3 .count.added{background:rgba(52,211,153,.15);color:var(--ok)}
+.diff-section h3 .count.removed{background:rgba(248,113,113,.15);color:var(--danger)}
+.diff-section h3 .count.modified{background:rgba(251,191,36,.15);color:var(--warn)}
+.diff-list{max-height:300px;overflow-y:auto;background:var(--bg1);border:1px solid var(--bg2);border-radius:var(--r)}
+.diff-item{display:flex;align-items:center;gap:.5rem;padding:.45rem .75rem;font-size:.82rem;border-bottom:1px solid var(--bg2);cursor:pointer;transition:background var(--trans)}
+.diff-item:last-child{border-bottom:none}
+.diff-item:hover{background:var(--bg2)}
+.diff-item .icon{width:16px;height:16px;flex-shrink:0}
+.diff-item .icon.added{color:var(--ok)}
+.diff-item .icon.removed{color:var(--danger)}
+.diff-item .icon.modified{color:var(--warn)}
+.diff-item .path{flex:1;word-break:break-all;color:var(--tx1)}
+.diff-item .reindex-btn{padding:.15rem .5rem;border-radius:4px;font-size:.68rem;border:1px solid var(--bg2);background:transparent;color:var(--tx2);cursor:pointer;transition:all var(--trans);white-space:nowrap}
+.diff-item .reindex-btn:hover{border-color:var(--accent);color:var(--accent)}
+.diff-summary{display:flex;gap:1rem;margin-bottom:1rem;flex-wrap:wrap}
+.diff-stat{padding:.5rem 1rem;border-radius:var(--r);background:var(--bg1);border:1px solid var(--bg2);text-align:center;min-width:100px}
+.diff-stat .num{font-size:1.5rem;font-weight:700}
+.diff-stat .label{font-size:.7rem;color:var(--tx3);margin-top:.2rem}
+.diff-actions{display:flex;gap:.5rem;margin-bottom:1.5rem;flex-wrap:wrap}
+
+/* ── Progress toast ─────────────────────────────── */
+.progress-toast{position:fixed;bottom:1.5rem;right:1.5rem;background:var(--bg1);border:1px solid var(--bg2);border-radius:var(--r);padding:1rem 1.25rem;box-shadow:var(--shadow);z-index:150;min-width:320px;max-width:420px;transform:translateY(20px);opacity:0;pointer-events:none;transition:transform .25s,opacity .25s}
+.progress-toast.open{transform:translateY(0);opacity:1;pointer-events:all}
+.progress-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem}
+.progress-phase{font-size:.72rem;padding:.15rem .5rem;border-radius:10px;font-weight:700;text-transform:uppercase}
+.progress-phase.extracting{background:rgba(56,189,248,.15);color:var(--accent)}
+.progress-phase.embedding{background:rgba(168,85,247,.15);color:#c084fc}
+.progress-phase.saving{background:rgba(251,191,36,.15);color:var(--warn)}
+.progress-phase.done{background:rgba(52,211,153,.15);color:var(--ok)}
+.progress-phase.error{background:rgba(248,113,113,.15);color:var(--danger)}
+.progress-eta{font-size:.72rem;color:var(--tx3)}
+.progress-label{font-size:.78rem;color:var(--tx2);margin-bottom:.3rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.progress-file{font-size:.72rem;color:var(--tx3);margin-bottom:.5rem;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pbar{height:4px;background:var(--bg2);border-radius:2px;overflow:hidden}
+.pfill{height:100%;background:var(--accent);border-radius:2px;width:0%;transition:width .3s}
+.progress-stats{display:flex;gap:1rem;margin-top:.5rem;font-size:.7rem;color:var(--tx3)}
+
+/* ── Modal ──────────────────────────────────────── */
+.modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(4px);z-index:200;display:flex;align-items:center;justify-content:center;padding:1.5rem;opacity:0;pointer-events:none;transition:opacity var(--trans)}
+.modal-bg.open{opacity:1;pointer-events:all}
+.modal{background:var(--bg1);border-radius:var(--r);border:1px solid var(--bg2);width:100%;max-width:780px;max-height:85vh;display:flex;flex-direction:column;box-shadow:var(--shadow)}
+.modal-header{display:flex;align-items:center;gap:.75rem;padding:.9rem 1.25rem;border-bottom:1px solid var(--bg2);flex-shrink:0}
+.modal-title{flex:1;font-size:.9rem;font-weight:600;color:var(--accent);word-break:break-all}
+.modal-close{background:none;border:none;color:var(--tx3);cursor:pointer;font-size:1.3rem;line-height:1;padding:.1rem .3rem;border-radius:4px;transition:color var(--trans)}
+.modal-close:hover{color:var(--danger)}
+.modal-body{flex:1;overflow:auto;padding:1rem 1.25rem}
+.modal-body pre{font-family:'Fira Code','Cascadia Code',monospace;font-size:.82rem;line-height:1.7;color:var(--tx1);white-space:pre-wrap;word-break:break-word}
+.modal-footer{padding:.65rem 1.25rem;border-top:1px solid var(--bg2);font-size:.72rem;color:var(--tx3);flex-shrink:0;display:flex;justify-content:space-between;align-items:center}
+
+/* ── Toast ──────────────────────────────────────── */
+.toast{position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%) translateY(80px);background:var(--bg1);border:1px solid var(--bg2);padding:.7rem 1.4rem;border-radius:var(--r);color:var(--tx0);font-size:.85rem;box-shadow:var(--shadow);z-index:300;transition:transform .3s;white-space:nowrap}
+.toast.show{transform:translateX(-50%) translateY(0)}
+
+/* ── Empty / Skeletons ──────────────────────────── */
+.empty{text-align:center;padding:5rem 2rem;color:var(--tx3)}
+.empty svg{width:56px;height:56px;margin-bottom:1rem;opacity:.25}
+.empty h3{color:var(--tx2);margin-bottom:.35rem}
+.skel{background:linear-gradient(90deg,var(--bg1) 25%,var(--bg2) 50%,var(--bg1) 75%);background-size:200% 100%;animation:shim 1.4s infinite;border-radius:var(--r);margin-bottom:.65rem}
+@keyframes shim{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* ── History dropdown ───────────────────────────── */
+.history-drop{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--bg1);border:1px solid var(--bg2);border-radius:var(--r);z-index:80;overflow:hidden;box-shadow:var(--shadow);display:none}
+.history-drop.open{display:block}
+.hist-item{padding:.55rem 1rem;font-size:.85rem;color:var(--tx1);cursor:pointer;display:flex;align-items:center;gap:.5rem;transition:background var(--trans)}
+.hist-item:hover{background:var(--bg2)}
+.hist-item svg{width:13px;height:13px;color:var(--tx3);flex-shrink:0}
+.hist-clear{padding:.4rem 1rem;font-size:.72rem;color:var(--tx3);cursor:pointer;border-top:1px solid var(--bg2);text-align:right}
+.hist-clear:hover{color:var(--danger)}
+
+@media(max-width:600px){
+  .header-inner{padding:.6rem 1rem}
+  .main{padding:1rem .75rem 3rem}
+  .card-top{flex-direction:column}
+  .badges{align-self:flex-start}
+  .kbd-hint{display:none}
+  .progress-toast{left:1rem;right:1rem;min-width:unset}
+}
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-inner">
+    <a class="logo" href="/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+      </svg>
+      File Searcher
+    </a>
+    <div class="spacer"></div>
+    <div class="nav-tabs">
+      <button class="nav-tab active" data-page="search" onclick="switchPage('search')">Search</button>
+      <button class="nav-tab" data-page="diff" onclick="switchPage('diff')">Diff</button>
+    </div>
+    <span class="pill" id="idxPill">loading…</span>
+    <button class="btn btn-ghost" id="rebuildBtn" onclick="rebuildIndex()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+        <path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+      </svg>
+      Reindex All
+    </button>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ═══ Search Page ═══ -->
+  <div class="page active" id="page-search">
+    <div class="search-wrap" id="searchWrap">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+      </svg>
+      <input class="search-input" id="qInput" type="text"
+             placeholder="Search files…  (Enter)" autocomplete="off">
+      <span class="kbd-hint">Enter ↵</span>
+      <button class="btn btn-primary search-btn" onclick="runSearch()">Search</button>
+      <div class="history-drop" id="histDrop"></div>
+    </div>
+
+    <div class="filters">
+      <span class="chip" id="chunkChip" onclick="toggleChip('chunkChip','byChunk')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+          <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+        </svg>
+        By chunk
+      </span>
+      <select class="fsel" id="topK" onchange="runSearch()">
+        <option value="5">Top 5</option>
+        <option value="10">Top 10</option>
+        <option value="20">Top 20</option>
+        <option value="50">Top 50</option>
+      </select>
+      <select class="fsel" id="sortSel" onchange="applySort()">
+        <option value="score">Sort: Score</option>
+        <option value="path">Sort: Path</option>
+        <option value="ext">Sort: Extension</option>
+      </select>
+      <div class="ext-filter-wrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+        </svg>
+        Ext:
+        <input class="ext-input" id="extInput" placeholder="pdf,docx,…">
+      </div>
+      <div style="flex:1"></div>
+      <button class="btn btn-ghost" id="exportBtn" onclick="exportResults()" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        CSV
+      </button>
+    </div>
+
+    <div class="results-meta" id="resMeta"></div>
+    <div id="results">
+      <div class="empty">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+          <polyline points="14 2 14 8 20 8"/>
+        </svg>
+        <h3>Start searching</h3>
+        <p>Type a query and press Enter</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Diff Page ═══ -->
+  <div class="page" id="page-diff">
+    <h2 style="font-size:1.1rem;margin-bottom:1rem;color:var(--tx1)">Index Diff</h2>
+    <div id="diffContent">
+      <div class="empty" style="padding:3rem">
+        <p>Loading diff…</p>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- ═══ Modal ═══ -->
+<div class="modal-bg" id="modalBg" onclick="closeModal(event)">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <span class="modal-title" id="modalTitle"></span>
+      <button class="modal-close" onclick="closeModal(null)">✕</button>
+    </div>
+    <div class="modal-body"><pre id="modalBody">Loading…</pre></div>
+    <div class="modal-footer">
+      <span id="modalFooter"></span>
+      <a class="abtn" id="modalOpenFB" href="#" target="_blank" style="display:none">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+          <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+        </svg>
+        Open in FileBrowser
+      </a>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ Progress Toast ═══ -->
+<div class="progress-toast" id="progToast">
+  <div class="progress-header">
+    <span class="progress-phase" id="progPhase">extracting</span>
+    <span class="progress-eta" id="progEta"></span>
+  </div>
+  <div class="progress-label" id="progLabel">Building index…</div>
+  <div class="progress-file" id="progFile"></div>
+  <div class="pbar"><div class="pfill" id="pfill"></div></div>
+  <div class="progress-stats">
+    <span id="progFiles">0/0 files</span>
+    <span id="progChunks">0 chunks</span>
+    <span id="progSkipped">0 skipped</span>
+  </div>
+</div>
+
+<!-- ═══ Toast ═══ -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ═══════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════
+const S = { results: [], query: "", fbUrl: "", diffData: null };
+const HIST_KEY = "fs_search_history";
+const MAX_HIST = 20;
+
+const $ = id => document.getElementById(id);
+const qInput     = $("qInput");
+const results    = $("results");
+const resMeta    = $("resMeta");
+const idxPill    = $("idxPill");
+const rebuildBtn = $("rebuildBtn");
+const progToast  = $("progToast");
+const pfill      = $("pfill");
+const progLabel  = $("progLabel");
+const progPhase  = $("progPhase");
+const progEta    = $("progEta");
+const progFile   = $("progFile");
+const progFiles  = $("progFiles");
+const progChunks = $("progChunks");
+const progSkipped= $("progSkipped");
+const exportBtn  = $("exportBtn");
+const modalBg    = $("modalBg");
+const modalTitle = $("modalTitle");
+const modalBody  = $("modalBody");
+const modalFooter= $("modalFooter");
+const modalOpenFB= $("modalOpenFB");
+const histDrop   = $("histDrop");
+
+// ═══════════════════════════════════════════
+// Page switching
+// ═══════════════════════════════════════════
+function switchPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  $(`page-${name}`).classList.add('active');
+  document.querySelector(`.nav-tab[data-page="${name}"]`).classList.add('active');
+  if (name === 'diff') loadDiff();
+}
+
+// ═══════════════════════════════════════════
+// FileBrowser URL builder
+// ═══════════════════════════════════════════
+function fbFileUrl(relPath) {
+  const base = S.fbUrl.replace(/\/+$/, "");
+  return base + "/api/raw/" + encodeURI(relPath.replace(/^\/+/, "")) + "?inline=true";
+}
+function fbPreviewUrl(relPath) {
+  const base = S.fbUrl.replace(/\/+$/, "");
+  return base + "/files/" + encodeURI(relPath.replace(/^\/+/, ""));
+}
+
+// ═══════════════════════════════════════════
+// Keyboard
+// ═══════════════════════════════════════════
+document.addEventListener("keydown", e => {
+  if ((e.ctrlKey||e.metaKey) && e.key === "k") { e.preventDefault(); qInput.focus(); qInput.select(); }
+  if (e.key === "Escape") { closeModal(null); histDrop.classList.remove("open"); }
+});
+qInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); runSearch(); histDrop.classList.remove("open"); }
+  if (e.key === "ArrowDown") focusHistItem(0);
+});
+qInput.addEventListener("input", () => renderHistDrop(qInput.value.trim()));
+qInput.addEventListener("focus", () => renderHistDrop(qInput.value.trim()));
+document.addEventListener("click", e => {
+  if (!$("searchWrap").contains(e.target)) histDrop.classList.remove("open");
+});
+
+// ═══════════════════════════════════════════
+// History
+// ═══════════════════════════════════════════
+function getHistory() { try { return JSON.parse(localStorage.getItem(HIST_KEY)||"[]"); } catch { return []; } }
+function pushHistory(q) {
+  let h = getHistory().filter(x => x !== q);
+  h.unshift(q);
+  if (h.length > MAX_HIST) h = h.slice(0, MAX_HIST);
+  localStorage.setItem(HIST_KEY, JSON.stringify(h));
+}
+function clearHistory() { localStorage.removeItem(HIST_KEY); histDrop.classList.remove("open"); }
+function renderHistDrop(prefix) {
+  const items = getHistory().filter(x => !prefix || x.toLowerCase().includes(prefix.toLowerCase()));
+  if (!items.length) { histDrop.classList.remove("open"); return; }
+  histDrop.innerHTML = items.map((x,i) => `
+    <div class="hist-item" tabindex="0"
+         onclick="pickHistory(${JSON.stringify(x)})"
+         onkeydown="histKey(event,${i},${JSON.stringify(x)})">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+      </svg>${esc(x)}
+    </div>`).join("") + `<div class="hist-clear" onclick="clearHistory()">Clear history</div>`;
+  histDrop.classList.add("open");
+}
+function pickHistory(val) { qInput.value = val; histDrop.classList.remove("open"); runSearch(); }
+function focusHistItem(i) { const it = histDrop.querySelectorAll(".hist-item"); if (it[i]) it[i].focus(); }
+function histKey(e,i,val) {
+  if (e.key==="Enter") pickHistory(val);
+  if (e.key==="ArrowDown") focusHistItem(i+1);
+  if (e.key==="ArrowUp") { if (i===0) qInput.focus(); else focusHistItem(i-1); }
+}
+
+// ═══════════════════════════════════════════
+// Chips
+// ═══════════════════════════════════════════
+const chipState = { byChunk: false };
+function toggleChip(chipId, key) {
+  chipState[key] = !chipState[key];
+  $(chipId).classList.toggle("active", chipState[key]);
+  runSearch();
+}
+
+// ═══════════════════════════════════════════
+// Search
+// ═══════════════════════════════════════════
+async function runSearch() {
+  const query = qInput.value.trim();
+  if (!query) return;
+  S.query = query;
+  pushHistory(query);
+  showSkeletons();
+  resMeta.textContent = "";
+  exportBtn.style.display = "none";
+
+  const t0 = performance.now();
+  try {
+    const body = {
+      query,
+      top_k: parseInt($("topK").value),
+      by_chunk: chipState.byChunk,
+      ext_filter: parseExtFilter(),
+    };
+    const r = await fetch("/api/search", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "Search failed");
+
+    const ms = (performance.now() - t0).toFixed(0);
+    setIndexPill(data.index_stale, data.building);
+    if (data.filebrowser_url) S.fbUrl = data.filebrowser_url;
+    S.results = data.results;
+
+    if (!data.results.length) {
+      results.innerHTML = `<div class="empty"><h3>No results</h3><p>Try broader terms</p></div>`;
+      resMeta.textContent = `0 results — ${ms} ms`;
+      return;
+    }
+    renderResults(data.results, query);
+    resMeta.textContent = `${data.results.length} result${data.results.length>1?"s":""} — ${ms} ms`;
+    exportBtn.style.display = "";
+  } catch (err) {
+    results.innerHTML = `<div class="empty" style="color:var(--danger)"><h3>Error</h3><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+function parseExtFilter() {
+  const raw = $("extInput").value.trim();
+  if (!raw) return [];
+  return raw.split(",").map(x => x.trim()).filter(Boolean);
+}
+
+// ═══════════════════════════════════════════
+// Render results
+// ═══════════════════════════════════════════
+function renderResults(items, query) {
+  results.innerHTML = applySortToArray(items).map(item => renderCard(item, query)).join("");
+}
+
+function renderCard(item, query) {
+  const ext = (item.path.split(".").pop()||"?").toUpperCase().slice(0,6);
+  const snip = highlightWords(esc(item.snippet), query);
+  const hasFB = !!S.fbUrl;
+  const fbOpen = hasFB ? fbPreviewUrl(item.path) : "#";
+  const fbRaw  = hasFB ? fbFileUrl(item.path) : "#";
+
+  return `
+<div class="card" id="card-${item.rank}">
+  <button class="copy-btn" onclick="copyPath(${JSON.stringify(item.path)})" title="Copy path">📋</button>
+  <div class="card-top">
+    <div class="card-path-row">
+      <a class="card-path" href="${esc(fbOpen)}" target="_blank"
+         ${hasFB ? '' : 'onclick="event.preventDefault();openPreview('+JSON.stringify(item.path)+')"'}
+      >${esc(item.path)}</a>
+    </div>
+    <div class="badges">
+      <span class="badge badge-rank">#${item.rank}</span>
+      <span class="badge badge-ext">${ext}</span>
+      <span class="badge badge-score">▲ ${item.score}</span>
+    </div>
+  </div>
+  <div class="card-meta">
+    <span>sem: ${item.sem}</span>
+    <span>bm25: ${item.lex}</span>
+    <span>chunk #${item.chunk_id}</span>
+    <span>chars ${item.start}–${item.end}</span>
+  </div>
+  <div class="card-actions">
+    ${hasFB ? `
+      <a class="abtn" href="${esc(fbOpen)}" target="_blank">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        Open</a>
+      <a class="abtn" href="${esc(fbRaw)}" target="_blank">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        View</a>
+    ` : ""}
+    <span class="abtn" onclick="openPreview(${JSON.stringify(item.path)})">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+      </svg>Preview</span>
+  </div>
+  <div class="snip" id="snip-${item.rank}">${snip}</div>
+  <button class="expand-btn" onclick="toggleSnip(${item.rank})">Show more ▾</button>
+</div>`;
+}
+
+function toggleSnip(rank) {
+  const el = $("snip-"+rank);
+  const btn = el.nextElementSibling;
+  const open = el.classList.toggle("open");
+  btn.textContent = open ? "Show less ▴" : "Show more ▾";
+}
+
+// ═══════════════════════════════════════════
+// Sort
+// ═══════════════════════════════════════════
+function applySortToArray(items) {
+  const mode = $("sortSel").value;
+  const arr = [...items];
+  if (mode==="path") arr.sort((a,b) => a.path.localeCompare(b.path));
+  else if (mode==="ext") arr.sort((a,b) => (a.path.split(".").pop()||"").localeCompare(b.path.split(".").pop()||""));
+  return arr;
+}
+function applySort() { if (S.results.length) renderResults(S.results, S.query); }
+
+// ═══════════════════════════════════════════
+// Highlight
+// ═══════════════════════════════════════════
+function highlightWords(html, query) {
+  const words = query.trim().split(/\s+/).filter(w => w.length > 2);
+  if (!words.length) return html;
+  const re = new RegExp(`(${words.map(escRe).join("|")})`, "gi");
+  return html.replace(re, "<mark>$1</mark>");
+}
+
+// ═══════════════════════════════════════════
+// Preview modal
+// ═══════════════════════════════════════════
+async function openPreview(path) {
+  modalTitle.textContent = path;
+  modalBody.textContent = "Loading…";
+  modalFooter.textContent = "";
+  modalBg.classList.add("open");
+  document.body.style.overflow = "hidden";
+  if (S.fbUrl) { modalOpenFB.href = fbPreviewUrl(path); modalOpenFB.style.display = ""; }
+  else { modalOpenFB.style.display = "none"; }
+  try {
+    const r = await fetch("/api/file?path=" + encodeURIComponent(path));
+    const d = await r.json();
+    if (!r.ok) { modalBody.textContent = d.detail || "Error"; return; }
+    modalBody.textContent = d.text || "(empty)";
+    modalFooter.textContent = `${d.lines} lines${d.truncated?" (truncated)":""}`;
+  } catch (e) { modalBody.textContent = "Failed: " + e.message; }
+}
+function closeModal(e) {
+  if (e && modal.contains(e.target)) return;
+  modalBg.classList.remove("open");
+  document.body.style.overflow = "";
+}
+
+// ═══════════════════════════════════════════
+// Export CSV
+// ═══════════════════════════════════════════
+async function exportResults() {
+  if (!S.results.length) return;
+  try {
+    const r = await fetch("/api/export", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({results: S.results, format: "csv"}),
+    });
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "results.csv"; a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) { showToast("Export failed"); }
+}
+
+// ═══════════════════════════════════════════
+// Copy
+// ═══════════════════════════════════════════
+async function copyPath(path) {
+  try { await navigator.clipboard.writeText(path); showToast("Copied!"); }
+  catch { showToast("Copy failed"); }
+}
+
+// ═══════════════════════════════════════════
+// Rebuild (full)
+// ═══════════════════════════════════════════
+async function rebuildIndex() {
+  rebuildBtn.disabled = true;
+  try {
+    const r = await fetch("/api/rebuild", { method: "POST" });
+    if (!r.ok) { const d = await r.json(); showToast(d.detail || "Failed"); rebuildBtn.disabled = false; return; }
+    showToast("Rebuild started");
+  } catch (e) { showToast("Error: " + e.message); rebuildBtn.disabled = false; }
+}
+
+// ═══════════════════════════════════════════
+// Selective rebuild
+// ═══════════════════════════════════════════
+async function rebuildSelective(paths) {
+  try {
+    const r = await fetch("/api/rebuild-selective", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ paths }),
+    });
+    if (!r.ok) { const d = await r.json(); showToast(d.detail || "Failed"); return; }
+    showToast(`Re-indexing ${paths.length} path(s)…`);
+  } catch (e) { showToast("Error: " + e.message); }
+}
+
+// ═══════════════════════════════════════════
+// Diff page
+// ═══════════════════════════════════════════
+async function loadDiff() {
+  const container = $("diffContent");
+  container.innerHTML = '<div class="empty" style="padding:3rem"><p>Loading diff…</p></div>';
+  try {
+    const r = await fetch("/api/diff");
+    const data = await r.json();
+    S.diffData = data;
+    renderDiff(data);
+  } catch (e) {
+    container.innerHTML = `<div class="empty" style="color:var(--danger)"><p>Error: ${esc(e.message)}</p></div>`;
+  }
+}
+
+function renderDiff(data) {
+  const container = $("diffContent");
+
+  if (!data.has_index) {
+    container.innerHTML = `
+      <div class="empty" style="padding:3rem">
+        <h3>No index yet</h3>
+        <p>${data.total_current} files found. Click "Reindex All" to build the first index.</p>
+      </div>`;
+    return;
+  }
+
+  if (!data.can_diff) {
+    container.innerHTML = `
+      <div class="empty" style="padding:3rem">
+        <h3>${data.stale ? "⚠ Index is stale" : "✓ Index is up to date"}</h3>
+        <p>${data.info || "Full rebuild needed."}</p>
+      </div>`;
+    return;
+  }
+
+  const { added, removed, modified } = data;
+  const isStale = added.length || removed.length || modified.length;
+
+  let html = `
+    <div class="diff-summary">
+      <div class="diff-stat"><div class="num" style="color:var(--tx2)">${data.total_current}</div><div class="label">Current files</div></div>
+      <div class="diff-stat"><div class="num" style="color:var(--ok)">${added.length}</div><div class="label">Added</div></div>
+      <div class="diff-stat"><div class="num" style="color:var(--danger)">${removed.length}</div><div class="label">Removed</div></div>
+      <div class="diff-stat"><div class="num" style="color:var(--warn)">${modified.length}</div><div class="label">Modified</div></div>
+    </div>`;
+
+  if (!isStale) {
+    html += `<div class="empty" style="padding:3rem"><h3>✓ Index is up to date</h3><p>No changes detected.</p></div>`;
+  } else {
+    html += `<div class="diff-actions">
+      <button class="btn btn-primary" onclick="rebuildIndex()">Reindex All</button>
+      <button class="btn btn-ghost" onclick="rebuildSelective(S.diffData.added.concat(S.diffData.modified).map(p=>p))">
+        Reindex Changed (${added.length + modified.length})
+      </button>
+    </div>`;
+
+    if (added.length) html += diffSection("Added", "added", added, true);
+    if (modified.length) html += diffSection("Modified", "modified", modified, true);
+    if (removed.length) html += diffSection("Removed", "removed", removed, false);
+  }
+
+  container.innerHTML = html;
+}
+
+function diffSection(title, cls, paths, canReindex) {
+  const icons = {
+    added: '<svg class="icon added" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>',
+    removed: '<svg class="icon removed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/></svg>',
+    modified: '<svg class="icon modified" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+  };
+  let html = `<div class="diff-section"><h3>${title} <span class="count ${cls}">${paths.length}</span></h3><div class="diff-list">`;
+  for (const p of paths) {
+    html += `<div class="diff-item">
+      ${icons[cls]}
+      <span class="path">${esc(p)}</span>
+      ${canReindex ? `<button class="reindex-btn" onclick="rebuildSelective(['${esc(p).replace(/'/g, "\\'")}'])">Reindex</button>` : ''}
+    </div>`;
+  }
+  html += `</div></div>`;
+  return html;
+}
+
+// ═══════════════════════════════════════════
+// WebSocket progress
+// ═══════════════════════════════════════════
+let ws = null;
+let wsReconnectTimer = null;
+
+function connectWS() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}/ws/progress`);
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    updateProgress(data);
+  };
+
+  ws.onclose = () => {
+    wsReconnectTimer = setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = () => {
+    ws.close();
+  };
+}
+
+function updateProgress(data) {
+  const { phase, message, current_file, current, total, chunks, skipped, elapsed, eta, pct } = data;
+
+  if (phase === "done" || phase === "error") {
+    // Show toast
+    progToast.classList.add("open");
+    progPhase.textContent = phase;
+    progPhase.className = `progress-phase ${phase}`;
+    progLabel.textContent = message;
+    progFile.textContent = "";
+    pfill.style.width = (phase === "done" ? 100 : pct) + "%";
+    progEta.textContent = "";
+    progFiles.textContent = `${current}/${total} files`;
+    progChunks.textContent = `${chunks} chunks`;
+    progSkipped.textContent = `${skipped} skipped`;
+    rebuildBtn.disabled = false;
+
+    if (phase === "done") {
+      setIndexPill(false, false);
+      setTimeout(() => progToast.classList.remove("open"), 4000);
+    } else {
+      showToast(message);
+      setIndexPill(true, false);
+      setTimeout(() => progToast.classList.remove("open"), 5000);
+    }
+    return;
+  }
+
+  // Active progress
+  progToast.classList.add("open");
+  progPhase.textContent = phase;
+  progPhase.className = `progress-phase ${phase}`;
+  progLabel.textContent = message;
+  progFile.textContent = current_file;
+  pfill.style.width = pct + "%";
+  progEta.textContent = eta > 0 ? `ETA: ${formatEta(eta)}` : "";
+  progFiles.textContent = `${current}/${total} files`;
+  progChunks.textContent = `${chunks} chunks`;
+  progSkipped.textContent = `${skipped} skipped`;
+
+  // Update pill
+  setIndexPill(true, true);
+  rebuildBtn.disabled = true;
+}
+
+function formatEta(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) {
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return `${m}m ${s}s`;
+  }
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return `${h}h ${m}m`;
+}
+
+// ═══════════════════════════════════════════
+// Pill / Skeletons / Toast
+// ═══════════════════════════════════════════
+function setIndexPill(stale, building) {
+  if (building) { idxPill.textContent = "⏳ building"; idxPill.className = "pill building"; }
+  else if (stale) { idxPill.textContent = "⚠ stale"; idxPill.className = "pill stale"; }
+  else { idxPill.textContent = "✓ up to date"; idxPill.className = "pill ok"; }
+}
+
+function showSkeletons() {
+  results.innerHTML = [100,130,90].map(h => `<div class="skel" style="height:${h}px"></div>`).join("");
+}
+
+let toastTimer;
+function showToast(msg) {
+  const t = $("toast"); t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 3000);
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function escRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+
+// ═══════════════════════════════════════════
+// Init
+// ═══════════════════════════════════════════
+(async () => {
+  try {
+    const r = await fetch("/api/status");
+    const d = await r.json();
+    setIndexPill(d.stale, d.building);
+    if (d.info) idxPill.title = d.info;
+    if (d.filebrowser_url) S.fbUrl = d.filebrowser_url;
+  } catch {
+    idxPill.textContent = "no index";
+    idxPill.className = "pill stale";
+  }
+  connectWS();
+})();
+</script>
+</body>
+</html>

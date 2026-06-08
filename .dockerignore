@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.pyo
+*.pkl
+*.db
+*.sqlite3
+models/
+data/
+filebrowser/
+.git
+*.md
+error.txt
+main.py.bak
