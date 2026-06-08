@@ -97,7 +97,7 @@ services:
 
   # 4. Semantic search web UI
   semantic-search:
-    image: ghcr.io/finettt/file-searcher:latest
+    image: ghcr.io/finettt/file-searcher:stable
     container_name: semantic-search
     ports:
       - "8001:8001"
