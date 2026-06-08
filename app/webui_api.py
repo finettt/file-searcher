@@ -182,8 +182,8 @@ def create_webui_app(
                             await upstream_ws.send(msg)
                     except WebSocketDisconnect:
                         pass
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.debug("browser→indexer relay closed: %s", exc)
 
                 async def upstream_to_browser():
                     """Forward progress messages from indexer to browser."""
@@ -191,10 +191,11 @@ def create_webui_app(
                         async for msg in upstream_ws:
                             try:
                                 await websocket.send_text(msg if isinstance(msg, str) else msg.decode())
-                            except Exception:
+                            except Exception as exc:
+                                log.debug("indexer→browser send failed: %s", exc)
                                 break
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        log.debug("indexer→browser relay closed: %s", exc)
 
                 await asyncio.gather(
                     browser_to_upstream(),
@@ -205,8 +206,8 @@ def create_webui_app(
         finally:
             try:
                 await websocket.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                log.debug("WebSocket close failed (client already gone): %s", exc)
 
     return app
 
