@@ -20,7 +20,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-editable
 
 COPY app/ ./app/
-COPY main.py .
+COPY main.py main_indexer.py main_webui.py ./
 COPY templates/ ./templates/
 
 # /data  — mounted RO (source documents)
@@ -32,7 +32,9 @@ USER app
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-EXPOSE 8001
+# Web UI on 8001, Indexer on 8002
+EXPOSE 8001 8002
 
-ENTRYPOINT ["python", "main.py"]
-CMD ["--help"]
+# Default: show help (override via compose command)
+ENTRYPOINT ["python"]
+CMD ["main.py", "--help"]

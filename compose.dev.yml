@@ -21,7 +21,7 @@ services:
   llamacpp-ocr:
     image: ghcr.io/ggml-org/llama.cpp:server
     ports:
-      - "8002:8000"
+      - "8003:8000"
     networks:
       - app-network
     volumes:
@@ -79,15 +79,13 @@ services:
       llamacpp:
         condition: service_healthy
 
-  # 4. Semantic search web UI
-  semantic-search:
+  # 4. Indexer service (owns search, rebuild, diff, file preview, progress)
+  indexer:
     build:
       context: .
       dockerfile: Dockerfile
     image: semantic-file-search
-    container_name: semantic-search
-    ports:
-      - "8001:8001"
+    container_name: indexer
     networks:
       - app-network
     environment:
@@ -102,12 +100,37 @@ services:
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-file_searcher}
     volumes:
       - ${DATA_DIR}:/data:ro
-    command: ["/data", "--port", "8001", "--filebrowser-url", "${FILEBROWSER_URL:-http://filebrowser:80}", "--verbose"]
+    command: ["main_indexer.py", "/data", "--port", "8002", "--filebrowser-url", "${FILEBROWSER_URL:-http://filebrowser:80}", "--verbose"]
     restart: unless-stopped
     depends_on:
       llamacpp:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # 5. Web UI gateway (serves HTML, proxies API calls to indexer)
+  webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: semantic-file-search
+    container_name: webui
+    ports:
+      - "8001:8001"
+    networks:
+      - app-network
+    environment:
+      - INDEXER_URL=http://indexer:8002
+    command: ["main_webui.py", "--port", "8001", "--indexer-url", "http://indexer:8002", "--verbose"]
+    restart: unless-stopped
+    depends_on:
+      indexer:
         condition: service_healthy
 
 networks:

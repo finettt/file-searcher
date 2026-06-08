@@ -1,4 +1,12 @@
-"""Tests for app/api.py."""
+"""Tests for app/api.py — backward-compatibility shim.
+
+Verifies that the re-exported ``create_app`` factory (which delegates to
+``create_indexer_app``) still works for existing callers.
+
+Full coverage for the individual services lives in:
+  - tests/test_indexer_api.py
+  - tests/test_webui_api.py
+"""
 
 from __future__ import annotations
 
@@ -29,25 +37,6 @@ class TestCreateApp:
                 api_key="test-key",
             )
             assert app is not None
-
-    def test_root_returns_html(self):
-        """Test that root endpoint returns HTML."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = False
-
-        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
-            from app.api import create_app
-
-            app = create_app(
-                folder=str(self.tmp_path),
-                model="test-model",
-                api_key="test-key",
-            )
-
-            client = TestClient(app)
-            response = client.get("/")
-            assert response.status_code == 200
-            assert "text/html" in response.headers.get("content-type", "")
 
     def test_health_no_index(self):
         """Test health endpoint when no index exists."""
@@ -160,7 +149,7 @@ class TestCreateApp:
                 api_key="test-key",
             )
 
-            # Simulate building state via AppState
+            # Simulate building state via AppState (now IndexerState)
             app.state.ctx.rebuilding = True
             app.state.ctx.rebuild_lock = True
             client = TestClient(app)
@@ -223,28 +212,6 @@ class TestCreateApp:
             assert response.status_code == 200
             data = response.json()
             assert data["has_index"] is False
-
-    def test_export_csv(self):
-        """Test export endpoint with CSV format."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = False
-
-        with patch("app.cache.QdrantIndex", return_value=mock_qdrant):
-            from app.api import create_app
-
-            app = create_app(
-                folder=str(self.tmp_path),
-                model="test-model",
-                api_key="test-key",
-            )
-
-            client = TestClient(app)
-            response = client.post(
-                "/api/export",
-                json={"results": [{"rank": 1, "path": "test.txt", "score": 0.95}], "format": "csv"},
-            )
-            assert response.status_code == 200
-            assert "text/csv" in response.headers.get("content-type", "")
 
     def test_file_path_traversal_rejected(self):
         """Test that path traversal attempts are rejected."""
