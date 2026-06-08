@@ -124,16 +124,21 @@ def create_app(
     app.state._rebuilding = False
     app.state._rebuild_lock = False
     app.state._background_tasks: set[asyncio.Task] = set()
-    # Use a closure to access mutable state
+    app.add_middleware(CORSMiddleware, allow_origins=["*"])
+
+    # Closures to access mutable rebuild state
+
     def get_rebuilding():
         return app.state._rebuilding
+
     def get_rebuild_lock():
         return app.state._rebuild_lock
+
     def set_rebuilding(val):
         app.state._rebuilding = val
+
     def set_rebuild_lock(val):
         app.state._rebuild_lock = val
-    app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
     # ── Helpers ─────────────────────────────────────────────
 
@@ -406,7 +411,7 @@ def create_app(
     @app.get("/api/file")
     async def api_file(path: str):
         full_path = (data_dir / path).resolve()
-        if not str(full_path).startswith(str(data_dir)):
+        if not full_path.is_relative_to(data_dir):
             return JSONResponse(status_code=403, content={"detail": "Access denied"})
         if not full_path.exists():
             return JSONResponse(status_code=404, content={"detail": "File not found"})

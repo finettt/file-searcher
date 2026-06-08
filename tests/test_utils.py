@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tempfile
 
 from app import utils
 from app.config import DEFAULT_EXTENSIONS

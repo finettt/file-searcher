@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.config import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_EXTENSIONS,
     DEFAULT_HOST,
     DEFAULT_LEXICAL_WEIGHT,
     DEFAULT_OVERLAP,
@@ -13,7 +14,6 @@ from app.config import (
     DEFAULT_QDRANT_URL,
     DEFAULT_SNIPPET_CHARS,
     DEFAULT_TOP_K,
-    DEFAULT_EXTENSIONS,
     SKIP_DIRNAMES,
 )
 

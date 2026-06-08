@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from app.chunking import chunk_text, clean_text, make_embed_input, make_snippet
 
 
@@ -49,8 +47,8 @@ class TestChunkText:
         assert len(chunks) >= 2
         # Check overlap between consecutive chunks
         if len(chunks) >= 2:
-            _, end1, content1 = chunks[0]
-            start2, _, content2 = chunks[1]
+            _, end1, _content1 = chunks[0]
+            start2, _, _content2 = chunks[1]
             # End of first chunk should be near start of second
             assert end1 >= start2
 

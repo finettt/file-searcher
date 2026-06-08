@@ -11,15 +11,14 @@ from pathlib import Path
 from .logging_config import get_logger
 
 log = get_logger(__name__)
+_WARNED_KEYS: set[str] = set()
 
 
 def _warn_once(key: str, message: str) -> None:
     """Log a warning only once per key."""
-    if not hasattr(_warn_once, "_seen"):
-        _warn_once._seen = set()
-    if key not in _warn_once._seen:
+    if key not in _WARNED_KEYS:
         log.warning(message)
-        _warn_once._seen.add(key)
+        _WARNED_KEYS.add(key)
 
 
 # ── Plain text ────────────────────────────────────────────────

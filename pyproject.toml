@@ -50,3 +50,4 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "main.py" = ["S105"]  # hardcoded password false positives on API key args
+"tests/**" = ["S101", "S108", "B007"]  # assert in tests, /tmp in test fixtures, unused loop vars

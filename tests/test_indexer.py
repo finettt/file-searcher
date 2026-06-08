@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
 
 class TestBuildClient:
@@ -49,7 +47,7 @@ class TestEmbedTexts:
                 mock_data.append(mock_embedding)
             mock_resp.data = mock_data
             return mock_resp
-        
+
         mock_client.embeddings.create.side_effect = mock_create
 
         with patch("openai.OpenAI", return_value=mock_client):

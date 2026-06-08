@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -35,7 +35,7 @@ class ProgressTracker:
         self._chunks: int = 0
         self._current_file: str = ""
         self._phase: str = "idle"
-        self._events: list[ProgressEvent] = field(default_factory=list)
+        self._events: list[ProgressEvent] = []
 
     def start(self, total_files: int) -> None:
         self._start_time = time.time()
