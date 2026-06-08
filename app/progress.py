@@ -10,15 +10,12 @@ from dataclasses import dataclass, field
 class ProgressEvent:
     """Single progress update pushed to WebSocket clients."""
 
-    # Event type
     phase: str  # "discovering" | "extracting" | "embedding" | "saving" | "done" | "error"
-    # Current file being processed (relative path)
-    current_file: str = ""
-    # Counters
-    current: int = 0  # files processed so far
-    total: int = 0  # total files to process
-    chunks: int = 0  # chunks created so far
-    skipped: int = 0  # files skipped (empty/unreadable)
+    current_file: str = ""  # relative path
+    current: int = 0  # files done
+    total: int = 0  # files total
+    chunks: int = 0  # chunks created
+    skipped: int = 0  # files skipped
     # Timing
     elapsed: float = 0.0  # seconds since start
     eta: float = 0.0  # estimated seconds remaining

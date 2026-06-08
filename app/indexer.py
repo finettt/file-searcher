@@ -148,7 +148,7 @@ def _upsert_batch(
                 },
             )
         )
-    # Qdrant accepts up to ~100 points per upsert efficiently
+    # Batch upsert: Qdrant handles ~100 points efficiently
     upsert_batch = 100
     upsert_t0 = time.monotonic()
     for start in range(0, len(points), upsert_batch):
@@ -238,7 +238,6 @@ def build_index(
     client = build_client(api_key, base_url)
     ocr_client = build_ocr_client(ocr_api_key, ocr_base_url)
 
-    # Discover files
     discover_t0 = time.monotonic()
     files = utils.collect_files(root, extensions)
     discover_dt = time.monotonic() - discover_t0
@@ -318,7 +317,6 @@ def build_index(
                         _fmt_time(elapsed),
                         eta,
                     )
-                    # Log every 10th file at INFO level for non-verbose users
                     if (file_idx + 1) % 10 == 0 or file_idx + 1 == len(files):
                         log.info(
                             "Extracted %d/%d files  (%d chunks so far, eta %s)",
@@ -360,7 +358,6 @@ def build_index(
     embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size)
     embeddings = l2_normalize_matrix(embeddings)
 
-    # Store in Qdrant
     if progress:
         yield progress.set_phase("saving", "Saving to Qdrant…")
 
@@ -369,7 +366,6 @@ def build_index(
     qdrant.recreate_collection(vector_size)
     _upsert_batch(qdrant, chunks_meta, embeddings)
 
-    # Store metadata
     fs_hash = utils.compute_fs_hash(root, extensions)
     meta = {
         "created_at": time.time(),
@@ -431,7 +427,6 @@ def build_index_selective(
     for p in paths:
         log.debug("  target: %s", p)
 
-    # Collect files to re-index
     target_files: list[Path] = []
     for rel in paths:
         candidate = (root / rel).resolve()
@@ -450,7 +445,6 @@ def build_index_selective(
 
     log.info("Collected %d files for re-indexing", len(target_files))
 
-    # Determine paths to remove from Qdrant
     exact_paths: list[str] = []
     prefix_paths: list[str] = []
     for rel in paths:
@@ -460,7 +454,7 @@ def build_index_selective(
         else:
             exact_paths.append(rel)
 
-    # Delete old chunks for these paths
+    # Remove old chunks for these paths
     if exact_paths:
         log.info("Deleting old chunks for %d exact paths", len(exact_paths))
         qdrant.delete_by_paths(exact_paths)
@@ -538,14 +532,14 @@ def build_index_selective(
         if progress:
             yield progress.file_done(rel_path, chunk_count, skipped)
 
-    # Embed new chunks
+    # Embed newly extracted chunks
     if embed_inputs:
         if progress:
             yield progress.set_phase("embedding", f"Embedding {len(embed_inputs)} chunks…")
         new_embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size)
         new_embeddings = l2_normalize_matrix(new_embeddings)
 
-        # Ensure collection exists (get vector size from existing or new embeddings)
+        # ensure_collection creates if missing, uses new embeddings' dim
         vector_size = new_embeddings.shape[1]
         qdrant.ensure_collection(vector_size)
         _upsert_batch(qdrant, new_chunks, new_embeddings)
@@ -558,12 +552,10 @@ def build_index_selective(
 
     meta = qdrant.get_metadata()
     file_hashes = meta.get("file_hashes", {})
-    # Remove hashes for deleted paths
     for p in exact_paths:
         file_hashes.pop(p, None)
     for pfx in prefix_paths:
         file_hashes = {k: v for k, v in file_hashes.items() if not k.startswith(pfx)}
-    # Add new hashes
     file_hashes.update(new_file_hashes)
 
     fs_hash = utils.compute_fs_hash(root, extensions)
@@ -575,7 +567,7 @@ def build_index_selective(
         }
     )
 
-    # Get vector size for metadata point
+    # Get actual vector dim from Qdrant (may differ from embeddings if reused)
     info = qdrant.client.get_collection(qdrant.collection)
     vec_cfg = info.config.params.vectors
     if isinstance(vec_cfg, qmodels.VectorParams):

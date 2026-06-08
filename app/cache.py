@@ -13,7 +13,7 @@ from .logging_config import get_logger
 
 log = get_logger(__name__)
 
-# Metadata key stored as a collection-level payload on a sentinel point
+# Sentinel point holds collection-level metadata
 _META_POINT_ID = "00000000-0000-0000-0000-000000000000"
 
 
@@ -53,7 +53,6 @@ class QdrantIndex:
                 distance=qmodels.Distance.COSINE,
             ),
         )
-        # Create payload indices for common filter/sort fields
         for field in ("path", "chunk_id"):
             self.client.create_payload_index(
                 collection_name=self.collection,
@@ -158,7 +157,7 @@ class QdrantIndex:
         if not prefixes:
             return
         log.info("Scanning for points matching %d prefix(es)", len(prefixes))
-        # Qdrant doesn't have native prefix match, so we scroll and delete
+        # Qdrant lacks native prefix match, so scroll and delete
         ids_to_delete: list[str] = []
         offset = None
         while True:

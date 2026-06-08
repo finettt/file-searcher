@@ -63,9 +63,8 @@ def do_search(
         embed_dt,
     )
 
-    # Build ext filter for Qdrant if provided
+    # Build filter: exclude metadata sentinel point
     filter_conditions: list[qmodels.Condition] = [
-        # Always exclude the metadata sentinel point
         qmodels.FieldCondition(
             key="_sentinel",
             match=qmodels.MatchValue(value=True),
@@ -74,7 +73,7 @@ def do_search(
     must_not = list(filter_conditions)
     qdrant_filter = qmodels.Filter(must_not=must_not) if must_not else None
 
-    # Fetch more candidates than needed for BM25 re-ranking
+    # Fetch more candidates for BM25 re-ranking
     search_limit = max(top_k * 6, 50)
 
     qdrant_t0 = time.monotonic()
@@ -100,7 +99,7 @@ def do_search(
         log.info("search end  no results  total=%.3fs", time.monotonic() - t0)
         return []
 
-    # Build chunk dicts from Qdrant results
+    # Build payload from Qdrant results
     chunks: list[dict] = []
     semantic_scores: list[float] = []
 
@@ -127,7 +126,7 @@ def do_search(
     lex_norm = lex / lex_max
     bm25_dt = time.monotonic() - bm25_t0
 
-    # Combined scores
+    # Combined semantic and lexical scores
     scores = sem_arr + lexical_weight * lex_norm
 
     log.debug(
@@ -146,7 +145,7 @@ def do_search(
         ranked = rank_by_file(scores, chunks, top_k * 4 if ext_filter else top_k)
     rank_dt = time.monotonic() - rank_t0
 
-    # Build output
+    # Final output
     output: list[dict] = []
     for rank, (idx, score) in enumerate(ranked, 1):
         item = chunks[idx]

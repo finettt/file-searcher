@@ -68,8 +68,8 @@ def main() -> None:
     # Initialise logging before anything else
     setup_logging(level=args.log_level, verbose=args.verbose)
 
-    # Import here so the logger is already configured when module-level
-    # code in the app package runs (e.g. get_logger() calls)
+    # Import here so logger is configured when app package code runs
+    # (e.g. get_logger() calls)
     from app.logging_config import get_logger
 
     log = get_logger("main")

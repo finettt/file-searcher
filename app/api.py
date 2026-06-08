@@ -108,7 +108,6 @@ def create_app(
     data_dir = Path(folder).expanduser().resolve()
     exts = utils.parse_extensions(extensions)
 
-    # Resolve env var defaults
     model = model or os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     api_key = api_key or os.getenv("OPENAI_API_KEY", "")
     base_url = base_url or os.getenv("OPENAI_BASE_URL")
@@ -119,10 +118,8 @@ def create_app(
     qdrant_url = qdrant_url or os.getenv("QDRANT_URL", DEFAULT_QDRANT_URL)
     qdrant_collection = qdrant_collection or os.getenv("QDRANT_COLLECTION", DEFAULT_QDRANT_COLLECTION)
 
-    # Qdrant client
     qdrant = QdrantIndex(url=qdrant_url, collection=qdrant_collection)
 
-    # Rebuild state
     _rebuilding = False
     _rebuild_lock = False
     _background_tasks: set[asyncio.Task] = set()
@@ -452,7 +449,6 @@ def create_app(
         except Exception:
             manager.disconnect(websocket)
 
-    # Store config on app for uvicorn runner
     app.state.host = host
     app.state.port = port
 

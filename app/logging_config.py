@@ -64,7 +64,6 @@ class _VerboseFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         colour = self._LEVEL_COLOURS.get(record.levelno, self._RESET)
         level = f"{colour}{record.levelname:<8}{self._RESET}"
-        # Strip the root prefix for cleaner display
         name = record.name.replace(ROOT_LOGGER + ".", "").replace(ROOT_LOGGER, "root")
         ts = self.formatTime(record, "%H:%M:%S")
         msg = record.getMessage()
@@ -108,7 +107,6 @@ def setup_logging(
     root = logging.getLogger(ROOT_LOGGER)
     root.setLevel(numeric)
 
-    # Avoid duplicate handlers on re-init (e.g. in tests)
     if root.handlers:
         root.handlers.clear()
 
@@ -119,7 +117,7 @@ def setup_logging(
     handler.setFormatter(_VerboseFormatter() if use_colour else _PlainFormatter())
     root.addHandler(handler)
 
-    # Silence noisy third-party loggers at WARNING unless verbose
+    # Silence noisy third-party loggers unless verbose
     for noisy in ("httpx", "httpcore", "openai", "urllib3", "qdrant_client"):
         logging.getLogger(noisy).setLevel(logging.DEBUG if verbose else logging.WARNING)
 
