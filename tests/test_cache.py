@@ -50,9 +50,7 @@ class TestQdrantIndex:
         mock_client = MagicMock()
         mock_collection = MagicMock()
         mock_collection.name = "file_searcher"
-        mock_client.get_collections.return_value = MagicMock(
-            collections=[mock_collection]
-        )
+        mock_client.get_collections.return_value = MagicMock(collections=[mock_collection])
 
         with patch("app.cache.QdrantClient", return_value=mock_client):
             from app.cache import QdrantIndex
@@ -87,9 +85,7 @@ class TestQdrantIndex:
         mock_client = MagicMock()
         mock_collection = MagicMock()
         mock_collection.name = "file_searcher"
-        mock_client.get_collections.return_value = MagicMock(
-            collections=[mock_collection]
-        )
+        mock_client.get_collections.return_value = MagicMock(collections=[mock_collection])
         mock_client.get_collection.return_value = MagicMock(points_count=42)
 
         with patch("app.cache.QdrantClient", return_value=mock_client):
@@ -112,9 +108,7 @@ class TestQdrantIndex:
     def test_get_all_file_hashes_no_metadata(self):
         """Test get_all_file_hashes returns empty dict when no metadata."""
         mock_client = MagicMock()
-        mock_client.get_collections.return_value = MagicMock(
-            collections=[MagicMock(name="file_searcher")]
-        )
+        mock_client.get_collections.return_value = MagicMock(collections=[MagicMock(name="file_searcher")])
         mock_client.retrieve.return_value = []
 
         with patch("app.cache.QdrantClient", return_value=mock_client):
@@ -126,9 +120,7 @@ class TestQdrantIndex:
     def test_get_all_paths(self):
         """Test get_all_paths returns set of paths."""
         mock_client = MagicMock()
-        mock_client.get_collections.return_value = MagicMock(
-            collections=[MagicMock(name="file_searcher")]
-        )
+        mock_client.get_collections.return_value = MagicMock(collections=[MagicMock(name="file_searcher")])
         mock_client.scroll.return_value = (
             [
                 MagicMock(payload={"path": "file1.txt"}),

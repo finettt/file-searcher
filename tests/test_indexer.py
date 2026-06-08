@@ -16,9 +16,7 @@ class TestBuildClient:
             from app.indexer import build_client
 
             build_client("test-key", "http://custom.example.com")
-            mock_openai.assert_called_once_with(
-                api_key="test-key", base_url="http://custom.example.com"
-            )
+            mock_openai.assert_called_once_with(api_key="test-key", base_url="http://custom.example.com")
 
     def test_build_client_without_base_url(self):
         """Test client builder without base URL."""
