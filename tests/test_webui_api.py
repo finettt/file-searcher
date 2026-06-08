@@ -242,3 +242,23 @@ class TestWebUIApp:
             client = TestClient(app)
             response = client.post("/api/rebuild-selective", json={"paths": ["file.txt"]})
             assert response.status_code == 200
+
+    def test_proxy_cancel_rebuild(self):
+        app = self._make_app()
+
+        mock_response = httpx.Response(
+            200,
+            json={"status": "cancelling"},
+            request=httpx.Request("POST", "http://fake-indexer:8002/api/cancel-rebuild"),
+        )
+
+        with patch.object(
+            httpx.AsyncClient,
+            "request",
+            new_callable=AsyncMock,
+            return_value=mock_response,
+        ):
+            client = TestClient(app)
+            response = client.post("/api/cancel-rebuild")
+            assert response.status_code == 200
+            assert response.json()["status"] == "cancelling"

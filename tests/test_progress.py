@@ -95,6 +95,18 @@ class TestProgressTracker:
         assert event.phase == "error"
         assert "Something failed" in event.message
 
+    def test_cancelled(self):
+        tracker = ProgressTracker()
+        tracker.start(10)
+        for i in range(3):
+            tracker.file_done(f"file{i}.txt", chunk_count=5)
+        event = tracker.cancelled()
+        assert event.phase == "cancelled"
+        assert event.current == 3
+        assert event.total == 10
+        assert event.chunks == 15
+        assert "Cancelled" in event.message
+
 
 class TestProgressEvent:
     def test_defaults(self):

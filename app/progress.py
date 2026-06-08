@@ -125,3 +125,16 @@ class ProgressTracker:
             pct=self.pct,
             message=f"Error: {message}",
         )
+
+    def cancelled(self) -> ProgressEvent:
+        return ProgressEvent(
+            phase="cancelled",
+            current=self._processed,
+            total=self._total_files,
+            chunks=self._chunks,
+            skipped=self._skipped,
+            elapsed=round(self.elapsed, 1),
+            eta=0.0,
+            pct=self.pct,
+            message=f"Cancelled after {self._processed}/{self._total_files} files",
+        )

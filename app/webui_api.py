@@ -159,6 +159,10 @@ def create_webui_app(
     async def api_rebuild_selective(request: Request):
         return await _proxy(request, "api/rebuild-selective")
 
+    @app.post("/api/cancel-rebuild")
+    async def api_cancel_rebuild(request: Request):
+        return await _proxy(request, "api/cancel-rebuild")
+
     @app.get("/api/file")
     async def api_file(request: Request):
         return await _proxy(request, "api/file")

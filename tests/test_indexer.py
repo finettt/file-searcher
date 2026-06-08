@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 
 class TestBuildClient:
@@ -107,3 +109,35 @@ class TestHelpers:
         assert _fmt_eta(1, 10, 0) == "calculating…"
         result = _fmt_eta(5, 10, 10.0)
         assert "s" in result or "m" in result
+
+
+class TestBuildCancelled:
+    def test_exception_exists(self):
+        """BuildCancelled exception is importable."""
+        from app.indexer import BuildCancelled
+
+        exc = BuildCancelled()
+        assert isinstance(exc, Exception)
+
+    def test_cancel_event_stops_build(self):
+        """build_index raises BuildCancelled when cancel_event is set."""
+        import threading
+
+        from app.indexer import BuildCancelled, build_index
+
+        cancel = threading.Event()
+        cancel.set()
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = True
+
+        root = Path(__file__).parent.parent
+        gen = build_index(
+            root,
+            qdrant=mock_qdrant,
+            model="test",
+            api_key="test",
+            cancel_event=cancel,
+        )
+        with pytest.raises(BuildCancelled):
+            next(gen)

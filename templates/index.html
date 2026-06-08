@@ -72,6 +72,7 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 .pill.ok{color:#4ade80;border-color:rgba(74,222,128,.2)}
 .pill.stale{color:#fbbf24;border-color:rgba(251,191,36,.2)}
 .pill.building{color:var(--tx1);animation:pulse 1.5s infinite}
+.pill.cancelling{color:#f87171;animation:pulse 1.5s infinite}
 @keyframes pulse{50%{opacity:.4}}
 
 .hbtn{
@@ -87,6 +88,16 @@ body{font-family:var(--sans);background:var(--bg);color:var(--tx);min-height:100
 .hbtn.loading .spin{display:block}
 .hbtn.loading svg:not(.spin){display:none}
 @keyframes sp{to{transform:rotate(360deg)}}
+
+.hbtn-cancel{
+  font-size:.7rem;padding:.3rem .6rem;border-radius:6px;
+  background:none;border:1px solid rgba(248,113,113,.25);color:#f87171;
+  cursor:pointer;transition:all .15s var(--ease);
+  display:none;align-items:center;gap:.3rem;
+}
+.hbtn-cancel:hover{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.4)}
+.hbtn-cancel:disabled{opacity:.3;cursor:not-allowed}
+.hbtn-cancel.active{display:flex}
 
 /* ── Main ───────────────────────────── */
 .main{max-width:720px;margin:0 auto;padding:2rem 1.5rem 5rem}
@@ -304,6 +315,7 @@ select.sel:focus{border-color:var(--border-hover)}
 .prog-phase.saving{color:#fbbf24;background:rgba(251,191,36,.08)}
 .prog-phase.done{color:#4ade80;background:rgba(74,222,128,.08)}
 .prog-phase.error{color:#f87171;background:rgba(248,113,113,.08)}
+.prog-phase.cancelled{color:#f87171;background:rgba(248,113,113,.08)}
 .prog-eta{font-size:.6rem;color:var(--tx3);font-family:var(--mono)}
 
 .prog-label{font-size:.7rem;color:var(--tx2);margin-bottom:.2rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -389,6 +401,7 @@ select.sel:focus{border-color:var(--border-hover)}
       <svg class="spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/></svg>
       Reindex
     </button>
+    <button class="hbtn-cancel" id="cancelBtn" onclick="cancelRebuild()">✕ Cancel</button>
   </div>
 </header>
 
@@ -470,7 +483,7 @@ select.sel:focus{border-color:var(--border-hover)}
 <div class="toast" id="toast"></div>
 
 <script>
-const S={results:[],query:"",fb:"",diff:null,busy:false,abort:null};
+const S={results:[],query:"",fb:"",diff:null,busy:false,abort:null,cancelling:false};
 const $=id=>document.getElementById(id);
 const q=$("q"),res=$("res"),meta=$("meta"),pill=$("pill"),hist=$("hist");
 
@@ -609,14 +622,28 @@ async function exportCSV(){
   try{const r=await fetch("/api/export",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({results:S.results,format:"csv"})});const b=await r.blob();const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`results_${new Date().toISOString().slice(0,10)}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(u),5e3);toast("exported")}catch(e){toast("failed")}
 }
 
+// ── Cancel button state ──
+function setCancelVisible(show){
+  $("cancelBtn").classList.toggle("active",show);
+}
+
 // ── Rebuild ──
 async function rebuild(){
   const btn=$("rebuildBtn");btn.disabled=true;btn.classList.add("loading");
-  try{const r=await fetch("/api/rebuild",{method:"POST"});if(!r.ok){const d=await r.json();toast(d.detail||"failed");btn.disabled=false;btn.classList.remove("loading");return}toast("rebuilding…")}catch(e){toast(e.message);btn.disabled=false;btn.classList.remove("loading")}
+  setCancelVisible(true);
+  try{const r=await fetch("/api/rebuild",{method:"POST"});if(!r.ok){const d=await r.json();toast(d.detail||"failed");btn.disabled=false;btn.classList.remove("loading");setCancelVisible(false);return}toast("rebuilding…")}catch(e){toast(e.message);btn.disabled=false;btn.classList.remove("loading");setCancelVisible(false)}
+}
+
+async function cancelRebuild(){
+  S.cancelling=true;
+  const btn=$("cancelBtn");btn.disabled=true;btn.classList.remove("active");
+  pill.textContent="cancelling";pill.className="pill building";
+  $("pPhase").textContent="cancelling";$("pPhase").className="prog-phase cancelled";
+  try{const r=await fetch("/api/cancel-rebuild",{method:"POST"});const d=await r.json();if(!r.ok)toast(d.detail||"failed")}catch(e){toast(e.message)}
 }
 
 async function rebuildSel(paths){
-  try{const r=await fetch("/api/rebuild-selective",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths})});if(!r.ok){const d=await r.json();toast(d.detail||"failed");return}toast(`reindexing ${paths.length} file(s)…`)}catch(e){toast(e.message)}
+  try{const r=await fetch("/api/rebuild-selective",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paths})});if(!r.ok){const d=await r.json();toast(d.detail||"failed");return}toast(`reindexing ${paths.length} file(s)…`);setCancelVisible(true)}catch(e){toast(e.message)}
 }
 
 // ── Diff ──
@@ -663,7 +690,7 @@ function connectWS(){
 function upProg(d){
   const{phase,message,current_file,current,total,chunks,skipped,eta,pct}=d;
   const prog=$("prog");
-  if(phase==="done"||phase==="error"){
+  if(phase==="done"||phase==="error"||phase==="cancelled"){
     prog.classList.add("open");
     $("pPhase").textContent=phase;$("pPhase").className=`prog-phase ${phase}`;
     $("pLabel").textContent=message;$("pFile").textContent="";
@@ -672,6 +699,7 @@ function upProg(d){
     $("pFiles").textContent=`${current}/${total}`;
     $("pChunks").textContent=`${chunks} ch`;$("pSkip").textContent=`${skipped} skip`;
     $("rebuildBtn").disabled=false;$("rebuildBtn").classList.remove("loading");
+    S.cancelling=false;setCancelVisible(false);
     setPill(phase!=="done",false);
     setTimeout(()=>prog.classList.remove("open"),phase==="done"?4e3:7e3);
     return;
@@ -683,7 +711,14 @@ function upProg(d){
   $("pEta").textContent=eta>0?fmtEta(eta):"";
   $("pFiles").textContent=`${current}/${total}`;
   $("pChunks").textContent=`${chunks} ch`;$("pSkip").textContent=`${skipped} skip`;
-  setPill(true,true);$("rebuildBtn").disabled=true;$("rebuildBtn").classList.add("loading");
+  if(!S.cancelling)setCancelVisible(true);
+  if(S.cancelling){
+    pill.textContent="cancelling";pill.className="pill cancelling";
+    $("rebuildBtn").disabled=true;$("rebuildBtn").classList.add("loading");
+    $("pPhase").textContent="cancelling";$("pPhase").className="prog-phase cancelled";
+  }else{
+    setPill(true,true);$("rebuildBtn").disabled=true;$("rebuildBtn").classList.add("loading");
+  }
 }
 function fmtEta(s){if(s<60)return Math.round(s)+"s";if(s<3600){const m=Math.floor(s/60);return m+"m "+Math.round(s%60)+"s"}return Math.floor(s/3600)+"h "+Math.floor((s%3600)/60)+"m"}
 
@@ -703,7 +738,7 @@ function escRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}
 
 // ── Init ──
 (async()=>{
-  try{const r=await fetch("/api/status");const d=await r.json();setPill(d.stale,d.building);if(d.info)pill.title=d.info;if(d.filebrowser_url)S.fb=d.filebrowser_url}catch{pill.textContent="—";pill.className="pill stale"}
+  try{const r=await fetch("/api/status");const d=await r.json();setPill(d.stale,d.building);if(d.info)pill.title=d.info;if(d.filebrowser_url)S.fb=d.filebrowser_url;if(d.building)setCancelVisible(true)}catch{pill.textContent="—";pill.className="pill stale"}
   connectWS();q.focus();
 })();
 </script>

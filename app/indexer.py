@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import uuid
 from collections.abc import Generator
@@ -24,6 +25,10 @@ from .logging_config import get_logger
 from .progress import ProgressEvent, ProgressTracker
 
 log = get_logger(__name__)
+
+
+class BuildCancelled(Exception):
+    """Raised when a rebuild is cancelled by user."""
 
 
 # ── OpenAI client builders ────────────────────────────────────
@@ -81,6 +86,7 @@ def embed_texts(
     model: str,
     texts: list[str],
     batch_size: int = 32,
+    cancel_event: threading.Event | None = None,
 ) -> np.ndarray:
     """Send texts to embedding model in batches. Returns L2-normalized matrix."""
     embed_log = get_logger("app.embedder")
@@ -89,6 +95,8 @@ def embed_texts(
     embed_start = time.monotonic()
 
     for start in range(0, total, batch_size):
+        if cancel_event and cancel_event.is_set():
+            raise BuildCancelled()
         batch = texts[start : start + batch_size]
         batch_t0 = time.monotonic()
         resp = client.embeddings.create(model=model, input=batch)
@@ -129,6 +137,7 @@ def _upsert_batch(
     qdrant: QdrantIndex,
     chunks: list[dict],
     embeddings: np.ndarray,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     """Upsert a batch of chunks + embeddings into Qdrant."""
     points = []
@@ -152,6 +161,8 @@ def _upsert_batch(
     upsert_batch = 100
     upsert_t0 = time.monotonic()
     for start in range(0, len(points), upsert_batch):
+        if cancel_event and cancel_event.is_set():
+            raise BuildCancelled()
         qdrant.client.upsert(
             collection_name=qdrant.collection,
             points=points[start : start + upsert_batch],
@@ -215,6 +226,7 @@ def build_index(
     overlap: int = DEFAULT_OVERLAP,
     batch_size: int = DEFAULT_BATCH_SIZE,
     progress: ProgressTracker | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Generator[ProgressEvent, None, None]:
     """Build a full semantic index from scratch → Qdrant.
 
@@ -256,6 +268,8 @@ def build_index(
     file_hashes: dict[str, str] = {}
 
     for file_idx, path in enumerate(files):
+        if cancel_event and cancel_event.is_set():
+            raise BuildCancelled()
         rel_path = str(path.relative_to(root))
         skipped = False
         chunk_count = 0
@@ -354,17 +368,21 @@ def build_index(
     # Embed
     if progress:
         yield progress.set_phase("embedding", f"Embedding {len(embed_inputs)} chunks…")
+    if cancel_event and cancel_event.is_set():
+        raise BuildCancelled()
 
-    embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size)
+    embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size, cancel_event=cancel_event)
     embeddings = l2_normalize_matrix(embeddings)
 
     if progress:
         yield progress.set_phase("saving", "Saving to Qdrant…")
+    if cancel_event and cancel_event.is_set():
+        raise BuildCancelled()
 
     vector_size = embeddings.shape[1]
     log.info("Recreating Qdrant collection (vector_size=%d)", vector_size)
     qdrant.recreate_collection(vector_size)
-    _upsert_batch(qdrant, chunks_meta, embeddings)
+    _upsert_batch(qdrant, chunks_meta, embeddings, cancel_event=cancel_event)
 
     fs_hash = utils.compute_fs_hash(root, extensions)
     meta = {
@@ -411,6 +429,7 @@ def build_index_selective(
     overlap: int = DEFAULT_OVERLAP,
     batch_size: int = DEFAULT_BATCH_SIZE,
     progress: ProgressTracker | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> Generator[ProgressEvent, None, None]:
     """Re-index only specific files/dirs, updating Qdrant in place.
 
@@ -474,6 +493,8 @@ def build_index_selective(
     new_file_hashes: dict[str, str] = {}
 
     for file_idx, path in enumerate(target_files):
+        if cancel_event and cancel_event.is_set():
+            raise BuildCancelled()
         rel_path = str(path.relative_to(root))
         skipped = False
         chunk_count = 0
@@ -536,19 +557,23 @@ def build_index_selective(
     if embed_inputs:
         if progress:
             yield progress.set_phase("embedding", f"Embedding {len(embed_inputs)} chunks…")
-        new_embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size)
+        if cancel_event and cancel_event.is_set():
+            raise BuildCancelled()
+        new_embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size, cancel_event=cancel_event)
         new_embeddings = l2_normalize_matrix(new_embeddings)
 
         # ensure_collection creates if missing, uses new embeddings' dim
         vector_size = new_embeddings.shape[1]
         qdrant.ensure_collection(vector_size)
-        _upsert_batch(qdrant, new_chunks, new_embeddings)
+        _upsert_batch(qdrant, new_chunks, new_embeddings, cancel_event=cancel_event)
     else:
         log.warning("No text extracted from any target file")
 
     # Update metadata
     if progress:
         yield progress.set_phase("saving", "Updating metadata…")
+    if cancel_event and cancel_event.is_set():
+        raise BuildCancelled()
 
     meta = qdrant.get_metadata()
     file_hashes = meta.get("file_hashes", {})

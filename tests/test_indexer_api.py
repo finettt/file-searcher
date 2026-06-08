@@ -160,3 +160,39 @@ class TestIndexerApp:
         assert ctx.api_key == "test-key"
         assert not ctx.rebuilding
         assert not ctx.rebuild_lock
+
+    def test_cancel_rebuild_no_rebuild_in_progress(self):
+        """Cancel returns 409 when no rebuild is running."""
+        app = self._make_app()
+        client = TestClient(app)
+        response = client.post("/api/cancel-rebuild")
+        assert response.status_code == 409
+
+    def test_cancel_rebuild_while_building(self):
+        """Cancel sets cancelling flag and cancel_event when rebuild is active."""
+        app = self._make_app()
+        app.state.ctx.rebuilding = True
+        client = TestClient(app)
+        response = client.post("/api/cancel-rebuild")
+        assert response.status_code == 200
+        assert response.json()["status"] == "cancelling"
+        assert app.state.ctx.cancelling is True
+        assert app.state.ctx.cancel_event.is_set()
+
+    def test_cancel_rebuild_idempotent(self):
+        """Second cancel returns cancelling status without error."""
+        app = self._make_app()
+        app.state.ctx.rebuilding = True
+        app.state.ctx.cancelling = True
+        client = TestClient(app)
+        response = client.post("/api/cancel-rebuild")
+        assert response.status_code == 200
+        assert response.json()["status"] == "cancelling"
+
+    def test_cancel_event_passed_to_build(self):
+        """Verify cancel_event is threading.Event on state."""
+        import threading
+
+        app = self._make_app()
+        assert isinstance(app.state.ctx.cancel_event, threading.Event)
+        assert not app.state.ctx.cancel_event.is_set()

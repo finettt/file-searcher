@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -27,7 +28,7 @@ from .config import (
     DEFAULT_TOP_K,
 )
 from .extractors import extract_text
-from .indexer import build_index, build_index_selective
+from .indexer import BuildCancelled, build_index, build_index_selective
 from .logging_config import get_logger
 from .models import (
     RebuildSelectiveRequest,
@@ -116,6 +117,8 @@ class IndexerState:
     # Runtime mutable state
     rebuilding: bool = False
     rebuild_lock: bool = False
+    cancelling: bool = False
+    cancel_event: threading.Event = field(default_factory=threading.Event)
     background_tasks: set[asyncio.Task] = field(default_factory=set)
     manager: ConnectionManager = field(default_factory=ConnectionManager)
 
@@ -147,6 +150,8 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
         return
     ctx.rebuild_lock = True
     ctx.rebuilding = True
+    ctx.cancelling = False
+    ctx.cancel_event.clear()
     if selective_paths:
         log.info("Selective rebuild started for %d path(s)", len(selective_paths))
     else:
@@ -174,6 +179,7 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
                     overlap=ctx.overlap,
                     batch_size=ctx.batch_size,
                     progress=progress,
+                    cancel_event=ctx.cancel_event,
                 )
             else:
                 gen = build_index(
@@ -190,10 +196,17 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
                     overlap=ctx.overlap,
                     batch_size=ctx.batch_size,
                     progress=progress,
+                    cancel_event=ctx.cancel_event,
                 )
 
             for evt in gen:
                 loop.call_soon_threadsafe(event_queue.put_nowait, evt.__dict__)
+        except BuildCancelled:
+            log.info("Rebuild cancelled")
+            loop.call_soon_threadsafe(
+                event_queue.put_nowait,
+                progress.cancelled().__dict__,
+            )
         except Exception as e:
             log.error("Rebuild failed: %s", e, exc_info=True)
             loop.call_soon_threadsafe(
@@ -216,6 +229,7 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
     finally:
         ctx.rebuilding = False
         ctx.rebuild_lock = False
+        ctx.cancelling = False
 
 
 # ── Lifespan ──────────────────────────────────────────────────
@@ -455,6 +469,19 @@ def create_indexer_app(
         ctx.background_tasks.add(task)
         task.add_done_callback(ctx.background_tasks.discard)
         return JSONResponse(content={"status": "started", "paths": body.paths})
+
+    @app.post("/api/cancel-rebuild")
+    async def api_cancel_rebuild(request: Request):
+        """Cancel an in-progress rebuild."""
+        ctx = _get_ctx(request)
+        if not ctx.rebuilding:
+            return JSONResponse(status_code=409, content={"detail": "No rebuild in progress"})
+        if ctx.cancelling:
+            return JSONResponse(content={"status": "cancelling"})
+        ctx.cancelling = True
+        ctx.cancel_event.set()
+        log.info("Cancel requested for rebuild")
+        return JSONResponse(content={"status": "cancelling"})
 
     @app.get("/api/file")
     async def api_file(path: str, request: Request):
