@@ -77,7 +77,7 @@ def do_search(
     qdrant_filter = qmodels.Filter(must_not=must_not) if must_not else None
 
     # Fetch more candidates for BM25 re-ranking
-    search_limit = max(top_k * 6, 50)
+    search_limit = max(top_k * 10, 100)
 
     qdrant_t0 = time.monotonic()
     results = qdrant.client.query_points(
