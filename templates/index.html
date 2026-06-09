@@ -321,10 +321,17 @@ select.sel:focus{border-color:var(--border-hover)}
 .prog-label{font-size:.7rem;color:var(--tx2);margin-bottom:.2rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .prog-file{font-size:.6rem;color:var(--tx3);font-family:var(--mono);margin-bottom:.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-.pbar{height:2px;background:var(--bg3);border-radius:1px;overflow:hidden}
+.pbar{height:2px;background:var(--bg3);border-radius:1px;overflow:hidden;margin-bottom:.15rem}
 .pfill{height:100%;background:var(--tx2);border-radius:1px;width:0%;transition:width .3s}
 
+/* secondary OCR sub-bar */
+.pbar-ocr{height:2px;background:var(--bg3);border-radius:1px;overflow:hidden;display:none}
+.pbar-ocr.active{display:block}
+.pfill-ocr{height:100%;background:#c084fc;border-radius:1px;width:0%;transition:width .3s}
+
 .prog-stats{display:flex;gap:.75rem;margin-top:.4rem;font-size:.6rem;color:var(--tx3);font-family:var(--mono)}
+.prog-ocr-row{margin-top:.3rem;font-size:.6rem;color:#c084fc;font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:none}
+.prog-ocr-row.active{display:block}
 
 /* ── Modal ──────────────────────────── */
 .overlay{
@@ -472,10 +479,13 @@ select.sel:focus{border-color:var(--border-hover)}
   <div class="prog-label" id="pLabel"></div>
   <div class="prog-file" id="pFile"></div>
   <div class="pbar"><div class="pfill" id="pFill"></div></div>
+  <div class="pbar-ocr" id="pBarOcr"><div class="pfill-ocr" id="pFillOcr"></div></div>
+  <div class="prog-ocr-row" id="pOcrRow"></div>
   <div class="prog-stats">
     <span id="pFiles">0/0</span>
     <span id="pChunks">0 ch</span>
     <span id="pSkip">0 skip</span>
+    <span id="pOcrPages" style="display:none">0 ocr pg</span>
   </div>
 </div>
 
@@ -687,8 +697,43 @@ function connectWS(){
   ws.onclose=()=>{wsDelay=Math.min(wsDelay*1.5,30e3);setTimeout(connectWS,wsDelay)};
   ws.onerror=()=>ws.close();
 }
+function _setOcrWidgets(ocr_pages, ocr_current_page, ocr_total_pages){
+  const hasOcr = ocr_pages > 0 || ocr_current_page > 0;
+  const inProgress = ocr_current_page > 0 && ocr_total_pages > 0;
+  // sub-bar
+  const barOcr=$("pBarOcr");
+  if(inProgress){
+    barOcr.classList.add("active");
+    $("pFillOcr").style.width=Math.round(ocr_current_page/ocr_total_pages*100)+"%";
+  } else {
+    barOcr.classList.remove("active");
+    $("pFillOcr").style.width="0%";
+  }
+  // text row
+  const ocrRow=$("pOcrRow");
+  if(inProgress){
+    ocrRow.classList.add("active");
+    ocrRow.textContent=`OCR page ${ocr_current_page}/${ocr_total_pages}`;
+  } else if(ocr_pages>0){
+    ocrRow.classList.add("active");
+    ocrRow.textContent=`OCR pages processed: ${ocr_pages}`;
+  } else {
+    ocrRow.classList.remove("active");
+    ocrRow.textContent="";
+  }
+  // cumulative counter in stats row
+  const ocrPgEl=$("pOcrPages");
+  if(hasOcr){
+    ocrPgEl.style.display="";
+    ocrPgEl.textContent=`${ocr_pages} ocr pg`;
+  } else {
+    ocrPgEl.style.display="none";
+  }
+}
+
 function upProg(d){
-  const{phase,message,current_file,current,total,chunks,skipped,eta,pct}=d;
+  const{phase,message,current_file,current,total,chunks,skipped,eta,pct,
+        ocr_pages=0,ocr_current_page=0,ocr_total_pages=0}=d;
   const prog=$("prog");
   if(phase==="done"||phase==="error"||phase==="cancelled"){
     prog.classList.add("open");
@@ -698,6 +743,7 @@ function upProg(d){
     $("pEta").textContent="";
     $("pFiles").textContent=`${current}/${total}`;
     $("pChunks").textContent=`${chunks} ch`;$("pSkip").textContent=`${skipped} skip`;
+    _setOcrWidgets(ocr_pages, 0, 0);
     $("rebuildBtn").disabled=false;$("rebuildBtn").classList.remove("loading");
     S.cancelling=false;setCancelVisible(false);
     setPill(phase!=="done",false);
@@ -711,6 +757,7 @@ function upProg(d){
   $("pEta").textContent=eta>0?fmtEta(eta):"";
   $("pFiles").textContent=`${current}/${total}`;
   $("pChunks").textContent=`${chunks} ch`;$("pSkip").textContent=`${skipped} skip`;
+  _setOcrWidgets(ocr_pages, ocr_current_page, ocr_total_pages);
   if(!S.cancelling)setCancelVisible(true);
   if(S.cancelling){
     pill.textContent="cancelling";pill.className="pill cancelling";
