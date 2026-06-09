@@ -36,7 +36,11 @@ class TestIndexerApp:
         app = self._make_app()
         client = TestClient(app)
         response = client.get("/api/health")
-        assert response.status_code == 503
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "no_index"
+        assert data["chunks"] == 0
+        assert data["model"] is None
 
     def test_health_with_index(self):
         mock_qdrant = MagicMock()

@@ -320,10 +320,24 @@ def create_indexer_app(
 
     @app.get("/api/health")
     async def api_health(request: Request):
-        """Healthcheck endpoint for Docker / load balancers."""
+        """Healthcheck endpoint for Docker / load balancers.
+
+        Returns 200 whenever the indexer process is running and Qdrant is
+        reachable. A missing collection is reported as ``no_index`` but is not
+        treated as a service failure.
+        """
         ctx = _get_ctx(request)
-        if not ctx.qdrant.collection_exists():
-            return JSONResponse(status_code=503, content={"status": "no_index"})
+        try:
+            exists = ctx.qdrant.collection_exists()
+        except Exception as exc:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "qdrant_unavailable", "detail": str(exc)},
+            )
+
+        if not exists:
+            return JSONResponse(content={"status": "no_index", "chunks": 0, "model": None})
+
         info = ctx.qdrant.get_info()
         return JSONResponse(
             content={
