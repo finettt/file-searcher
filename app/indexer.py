@@ -275,9 +275,30 @@ def build_index(
         chunk_count = 0
         file_t0 = time.monotonic()
 
+        # Build OCR callbacks that emit progress events via the tracker
+        ocr_events: list = []  # collect events to yield after extract_text returns
+
+        def _on_ocr_start(page: int, total: int, _rp: str = rel_path) -> None:
+            if progress:
+                evt = progress.ocr_page_start(_rp, page, total)
+                ocr_events.append(evt)
+
+        def _on_ocr_done(page: int, total: int, _rp: str = rel_path) -> None:
+            if progress:
+                evt = progress.ocr_page_done(_rp, page, total)
+                ocr_events.append(evt)
+
         try:
             file_size = path.stat().st_size
-            text = clean_text(extract_text(path, ocr_client=ocr_client, ocr_model=ocr_model))
+            text = clean_text(
+                extract_text(
+                    path,
+                    ocr_client=ocr_client,
+                    ocr_model=ocr_model,
+                    on_ocr_page_start=_on_ocr_start if progress else None,
+                    on_ocr_page_done=_on_ocr_done if progress else None,
+                )
+            )
             extract_dt = time.monotonic() - file_t0
 
             if not text:
@@ -349,9 +370,12 @@ def build_index(
             )
             skipped = True
 
+        # Yield any buffered OCR page events first, then the file-done event
         if progress:
-            evt = progress.file_done(rel_path, chunk_count, skipped)
-            yield evt
+            for ocr_evt in ocr_events:
+                yield ocr_evt
+            ocr_events.clear()
+            yield progress.file_done(rel_path, chunk_count, skipped)
 
     extract_dt_total = time.monotonic() - extract_t0
     log.info(
@@ -500,9 +524,29 @@ def build_index_selective(
         chunk_count = 0
         file_t0 = time.monotonic()
 
+        ocr_events: list = []
+
+        def _on_ocr_start(page: int, total: int, _rp: str = rel_path) -> None:
+            if progress:
+                evt = progress.ocr_page_start(_rp, page, total)
+                ocr_events.append(evt)
+
+        def _on_ocr_done(page: int, total: int, _rp: str = rel_path) -> None:
+            if progress:
+                evt = progress.ocr_page_done(_rp, page, total)
+                ocr_events.append(evt)
+
         try:
             file_size = path.stat().st_size
-            text = clean_text(extract_text(path, ocr_client=ocr_client, ocr_model=ocr_model))
+            text = clean_text(
+                extract_text(
+                    path,
+                    ocr_client=ocr_client,
+                    ocr_model=ocr_model,
+                    on_ocr_page_start=_on_ocr_start if progress else None,
+                    on_ocr_page_done=_on_ocr_done if progress else None,
+                )
+            )
             extract_dt = time.monotonic() - file_t0
 
             if not text:
@@ -551,6 +595,9 @@ def build_index_selective(
             skipped = True
 
         if progress:
+            for ocr_evt in ocr_events:
+                yield ocr_evt
+            ocr_events.clear()
             yield progress.file_done(rel_path, chunk_count, skipped)
 
     # Embed newly extracted chunks

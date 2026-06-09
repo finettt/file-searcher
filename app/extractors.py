@@ -6,6 +6,7 @@ import base64
 import os
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from .logging_config import get_logger
@@ -66,8 +67,20 @@ def read_text_file(path: Path) -> str:
 # ── PDF ───────────────────────────────────────────────────────
 
 
-def ocr_pdf_page(pdf_path: Path, page_number: int, client, model: str) -> str:
-    """Render one PDF page to 300 DPI PNG, send to vision LLM, return text."""
+def ocr_pdf_page(
+    pdf_path: Path,
+    page_number: int,
+    client,
+    model: str,
+    *,
+    on_page_start: Callable[[int, int], None] | None = None,
+    on_page_done: Callable[[int, int], None] | None = None,
+    total_pages: int = 0,
+) -> str:
+    """Render one PDF page to 300 DPI PNG, send to vision LLM, return text.
+
+    *page_number* is 0-based.  Callbacks receive ``(page_1based, total_pages)``.
+    """
     page_no = page_number + 1
     page_t0 = time.monotonic()
     try:
@@ -98,6 +111,12 @@ def ocr_pdf_page(pdf_path: Path, page_number: int, client, model: str) -> str:
             with open(tmp_path, "rb") as f:
                 payload = f.read()
             b64 = base64.b64encode(payload).decode("utf-8")
+
+            if on_page_start:
+                try:
+                    on_page_start(page_no, total_pages)
+                except Exception:
+                    pass
 
             req_t0 = time.monotonic()
             response = client.chat.completions.create(
@@ -144,6 +163,13 @@ def ocr_pdf_page(pdf_path: Path, page_number: int, client, model: str) -> str:
                 img.height,
                 len(payload),
             )
+
+            if on_page_done:
+                try:
+                    on_page_done(page_no, total_pages)
+                except Exception:
+                    pass
+
             return text
         finally:
             os.unlink(tmp_path)
@@ -156,8 +182,15 @@ def extract_pdf_text(
     path: Path,
     ocr_client=None,
     ocr_model: str | None = None,
+    *,
+    on_ocr_page_start: Callable[[int, int], None] | None = None,
+    on_ocr_page_done: Callable[[int, int], None] | None = None,
 ) -> str:
-    """Extract text from PDF. Fall back to OCR for pages without text layer."""
+    """Extract text from PDF. Fall back to OCR for pages without text layer.
+
+    *on_ocr_page_start* / *on_ocr_page_done* receive ``(page_1based, total_pages)``
+    and are called around every vision-LLM request so callers can emit progress events.
+    """
     t0 = time.monotonic()
     try:
         from pypdf import PdfReader
@@ -167,6 +200,7 @@ def extract_pdf_text(
 
     try:
         reader = PdfReader(str(path))
+        total_pages = len(reader.pages)
         parts: list[str] = []
         text_pages = 0
         ocr_pages = 0
@@ -182,7 +216,15 @@ def extract_pdf_text(
             if not text.strip() or len(text.strip()) < 10:
                 if ocr_client and ocr_model:
                     log.debug("pdf page fallback to ocr  file=%s page=%d", path, page_num)
-                    ocr_text = ocr_pdf_page(path, page_num - 1, ocr_client, ocr_model)
+                    ocr_text = ocr_pdf_page(
+                        path,
+                        page_num - 1,
+                        ocr_client,
+                        ocr_model,
+                        on_page_start=on_ocr_page_start,
+                        on_page_done=on_ocr_page_done,
+                        total_pages=total_pages,
+                    )
                     if ocr_text:
                         parts.append(ocr_text)
                         ocr_pages += 1
@@ -366,11 +408,24 @@ def extract_text(
     path: Path,
     ocr_client=None,
     ocr_model: str | None = None,
+    *,
+    on_ocr_page_start: Callable[[int, int], None] | None = None,
+    on_ocr_page_done: Callable[[int, int], None] | None = None,
 ) -> str:
-    """Extract text from any supported file type."""
+    """Extract text from any supported file type.
+
+    For PDFs with OCR fallback, *on_ocr_page_start* and *on_ocr_page_done*
+    are called with ``(page_1based, total_pages)`` around each vision-LLM call.
+    """
     ext = path.suffix.lower()
     if ext == ".pdf":
-        return extract_pdf_text(path, ocr_client=ocr_client, ocr_model=ocr_model)
+        return extract_pdf_text(
+            path,
+            ocr_client=ocr_client,
+            ocr_model=ocr_model,
+            on_ocr_page_start=on_ocr_page_start,
+            on_ocr_page_done=on_ocr_page_done,
+        )
     if ext == ".docx":
         return extract_docx_text(path)
     if ext in (".xlsx", ".xls"):
