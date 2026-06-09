@@ -67,6 +67,46 @@ def bm25_scores(
     return scores
 
 
+# ── Reciprocal Rank Fusion ────────────────────────────────────
+
+RRF_K = 60  # Standard RRF constant; higher values dampen rank differences
+
+
+def rrf_fusion(
+    sem_scores: np.ndarray,
+    lex_scores: np.ndarray,
+    k: int = RRF_K,
+) -> np.ndarray:
+    """Combine semantic and lexical scores via Reciprocal Rank Fusion.
+
+    RRF is rank-based and requires no weight tuning: each list contributes
+    ``1 / (k + rank)`` to the final score (rank is 1-indexed, lower is better).
+
+    Args:
+        sem_scores: Semantic similarity scores (higher = better).
+        lex_scores: BM25 lexical scores (higher = better).
+        k: RRF constant (default 60, per the original RRF paper).
+
+    Returns:
+        Combined RRF scores as float32 array (higher = better).
+    """
+    n = len(sem_scores)
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+
+    # Compute ranks (1-indexed, rank 1 = highest score)
+    # argsort ascending, then invert to get rank of each position
+    sem_order = np.argsort(-sem_scores)
+    lex_order = np.argsort(-lex_scores)
+
+    sem_rank = np.empty(n, dtype=np.float32)
+    lex_rank = np.empty(n, dtype=np.float32)
+    sem_rank[sem_order] = np.arange(1, n + 1, dtype=np.float32)
+    lex_rank[lex_order] = np.arange(1, n + 1, dtype=np.float32)
+
+    return (1.0 / (k + sem_rank) + 1.0 / (k + lex_rank)).astype(np.float32)
+
+
 # ── Ranking ───────────────────────────────────────────────────
 
 

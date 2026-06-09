@@ -7,7 +7,6 @@ from app.config import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EXTENSIONS,
     DEFAULT_HOST,
-    DEFAULT_LEXICAL_WEIGHT,
     DEFAULT_OVERLAP,
     DEFAULT_PORT,
     DEFAULT_QDRANT_COLLECTION,
@@ -37,9 +36,6 @@ class TestConfigConstants:
 
     def test_default_snippet_chars(self):
         assert DEFAULT_SNIPPET_CHARS == 300
-
-    def test_default_lexical_weight(self):
-        assert DEFAULT_LEXICAL_WEIGHT == 0.3
 
     def test_default_batch_size(self):
         assert DEFAULT_BATCH_SIZE == 32

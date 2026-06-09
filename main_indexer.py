@@ -32,7 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--by-chunk", action="store_true")
     parser.add_argument("--snippet-chars", type=int, default=300)
-    parser.add_argument("--lexical-weight", type=float, default=0.3)
     parser.add_argument(
         "--filebrowser-url",
         default=os.getenv("FILEBROWSER_URL", ""),
@@ -100,7 +99,6 @@ def main() -> None:
         top_k=args.top_k,
         by_chunk=args.by_chunk,
         snippet_chars=args.snippet_chars,
-        lexical_weight=args.lexical_weight,
         filebrowser_url=args.filebrowser_url,
     )
     run_indexer(app)
