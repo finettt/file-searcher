@@ -20,7 +20,6 @@ from .config import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_HOST,
-    DEFAULT_LEXICAL_WEIGHT,
     DEFAULT_OVERLAP,
     DEFAULT_QDRANT_COLLECTION,
     DEFAULT_QDRANT_URL,
@@ -111,7 +110,6 @@ class IndexerState:
     top_k: int
     by_chunk: bool
     snippet_chars: int
-    lexical_weight: float
     filebrowser_url: str
 
     # Runtime mutable state
@@ -270,7 +268,6 @@ def create_indexer_app(
     top_k: int = DEFAULT_TOP_K,
     by_chunk: bool = False,
     snippet_chars: int = DEFAULT_SNIPPET_CHARS,
-    lexical_weight: float = DEFAULT_LEXICAL_WEIGHT,
     filebrowser_url: str = "",
 ) -> FastAPI:
     """Create and configure the indexer FastAPI application."""
@@ -308,7 +305,6 @@ def create_indexer_app(
         top_k=top_k,
         by_chunk=by_chunk,
         snippet_chars=snippet_chars,
-        lexical_weight=lexical_weight,
         filebrowser_url=filebrowser_url,
     )
 
@@ -445,7 +441,6 @@ def create_indexer_app(
                 top_k=top_k_val,
                 by_chunk=body.by_chunk,
                 snippet_chars=ctx.snippet_chars,
-                lexical_weight=ctx.lexical_weight,
                 ext_filter=body.ext_filter,
             )
         except Exception as e:

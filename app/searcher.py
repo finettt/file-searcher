@@ -13,7 +13,7 @@ from .cache import QdrantIndex
 from .chunking import make_snippet
 from .indexer import build_client, embed_texts, l2_normalize_vector
 from .logging_config import get_logger
-from .scoring import bm25_scores, rank_by_chunk, rank_by_file
+from .scoring import bm25_scores, rank_by_chunk, rank_by_file, rrf_fusion
 
 log = get_logger(__name__)
 
@@ -28,25 +28,24 @@ def do_search(
     top_k: int = 5,
     by_chunk: bool = False,
     snippet_chars: int = 300,
-    lexical_weight: float = 0.3,
     ext_filter: list[str] | None = None,
 ) -> list[dict]:
     """Run hybrid search against Qdrant.
 
     1. Embed query → search Qdrant for top candidates (semantic)
-    2. Re-rank with BM25 (lexical) on the returned chunks
-    3. Return ranked list of result dicts
+    2. Score returned chunks with BM25 (lexical)
+    3. Fuse semantic + lexical rankings with RRF
+    4. Return ranked list of result dicts
     """
     t0 = time.monotonic()
     api_key = api_key or os.getenv("OPENAI_API_KEY", "")
     base_url = base_url or os.getenv("OPENAI_BASE_URL")
 
     log.info(
-        "search start  query=%r top_k=%d by_chunk=%s lexical_weight=%.2f ext_filter=%s",
+        "search start  query=%r top_k=%d by_chunk=%s fusion=rrf ext_filter=%s",
         query,
         top_k,
         by_chunk,
-        lexical_weight,
         ext_filter or [],
     )
 
@@ -122,18 +121,16 @@ def do_search(
 
     sem_arr = np.array(semantic_scores, dtype=np.float32)
 
-    # BM25 re-ranking on the returned chunks
+    # BM25 lexical scoring on the returned chunks
     bm25_t0 = time.monotonic()
     lex = bm25_scores(query, chunks)
-    lex_max = float(lex.max()) if lex.max() > 0 else 1.0
-    lex_norm = lex / lex_max
     bm25_dt = time.monotonic() - bm25_t0
 
-    # Combined semantic and lexical scores
-    scores = sem_arr + lexical_weight * lex_norm
+    # Reciprocal Rank Fusion of semantic and lexical rankings
+    scores = rrf_fusion(sem_arr, lex)
 
     log.debug(
-        "rerank stats  candidates=%d bm25_time=%.3fs sem_max=%.4f lex_max=%.4f",
+        "rerank stats  candidates=%d bm25_time=%.3fs fusion=rrf sem_max=%.4f lex_max=%.4f",
         len(chunks),
         bm25_dt,
         float(sem_arr.max()) if len(sem_arr) else 0.0,
