@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -219,23 +219,28 @@ class TestIndexerApp:
 
     def test_reranker_health_endpoint_ok(self):
         """GET /api/reranker-health returns 200 when reranker is reachable."""
+        import httpx
+
         app = self._make_app()
         client = TestClient(app)
 
         mock_resp = MagicMock()
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("httpx.AsyncClient") as mock_async_cls:
-            mock_async_ctx = MagicMock()
-            mock_async_cls.return_value.__aenter__ = lambda s, *a, **k: _async_return(mock_async_ctx)
-            mock_async_cls.return_value.__aexit__ = lambda s, *a, **k: _async_return(None)
-            mock_async_ctx.get = MagicMock(return_value=_async_return_val(mock_resp))
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
 
+        mock_async_cls = MagicMock()
+        mock_async_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(httpx, "AsyncClient", mock_async_cls):
             response = client.get("/api/reranker-health")
 
-        # If mock setup causes issues we still get a JSON response (ok or 503)
-        assert response.status_code in (200, 503)
-        assert "reranker_url" in response.json()
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert "reranker_url" in data
 
     def test_reranker_health_endpoint_unreachable(self):
         """GET /api/reranker-health returns 503 when reranker is not reachable."""
@@ -244,16 +249,14 @@ class TestIndexerApp:
         app = self._make_app()
         client = TestClient(app)
 
-        with patch("httpx.AsyncClient") as mock_async_cls:
-            mock_async_ctx = MagicMock()
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
 
-            async def raise_connect_error(*args, **kwargs):
-                raise httpx.ConnectError("refused")
+        mock_async_cls = MagicMock()
+        mock_async_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_cls.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            mock_async_cls.return_value.__aenter__ = lambda s, *a, **k: _async_return(mock_async_ctx)
-            mock_async_cls.return_value.__aexit__ = lambda s, *a, **k: _async_return(None)
-            mock_async_ctx.get = raise_connect_error
-
+        with patch.object(httpx, "AsyncClient", mock_async_cls):
             response = client.get("/api/reranker-health")
 
         assert response.status_code == 503
@@ -270,25 +273,3 @@ class TestIndexerApp:
         assert "localhost" in ctx.reranker_base_url or "llamacpp" in ctx.reranker_base_url
 
 
-# ── Async helpers for mocking httpx.AsyncClient ───────────────
-
-
-class _async_return:
-    """Awaitable that returns a fixed value."""
-
-    def __init__(self, value):
-        self._value = value
-
-    def __await__(self):
-        yield
-        return self._value
-
-
-class _async_return_val:
-    """Async-callable that returns a fixed value when awaited."""
-
-    def __init__(self, value):
-        self._value = value
-
-    async def __call__(self, *args, **kwargs):
-        return self._value

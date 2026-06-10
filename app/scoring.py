@@ -132,8 +132,9 @@ def rank_by_chunk(
 ) -> list[tuple[int, float]]:
     """Rank individual chunks by score. Returns [(chunk_idx, score), …].
 
-    Part of the public scoring API; retained for callers that do not use the
-    cross-encoder reranker path.
+    Public scoring API.  Not used by the default reranker pipeline
+    (which uses :func:`bm25_top_k` + cross-encoder) but available for
+    callers that want chunk-level RRF ranking without a cross-encoder step.
     """
     top_idx = np.argsort(-scores)[:top_k]
     return [(int(i), float(scores[i])) for i in top_idx]

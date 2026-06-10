@@ -368,9 +368,11 @@ class TestDoSearch:
         # Should still return results (via RRF fallback)
         assert len(result) == 1
         assert result[0]["path"] == "test.txt"
-        # Rerank score should be 0.0 (sentinel for fallback)
-        assert result[0]["rerank"] == 0.0
-        # RRF score should still be present
+        # rerank sentinel is -1.0 (outside [0,1]) — distinguishable from a real score
+        assert result[0]["rerank"] == -1.0
+        # reranker_used flag lets consumers know the cross-encoder was not active
+        assert result[0]["reranker_used"] is False
+        # RRF score should still be present and positive
         assert result[0]["score"] > 0
 
     def test_no_top_n_passed_to_reranker(self):

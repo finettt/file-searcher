@@ -184,7 +184,9 @@ def do_search(
 
     rerank_input = [chunks[idx] for idx in rerank_pool_indices]
 
-    # Cross-encoder rerank — fall back to RRF order when the reranker is down
+    # Cross-encoder rerank — fall back to RRF order when the reranker is down.
+    # rerank_input is already ordered by RRF score descending (via bm25_top_k or
+    # rank_by_file), so the fallback index order == descending relevance order.
     reranker_used = True
     try:
         # Request all pool scores; we apply top_k after ext_filter so we don't
@@ -201,11 +203,9 @@ def do_search(
             exc,
         )
         reranker_used = False
-        # Synthesize RRF-ordered results with sentinel rerank score of 0.0
-        rerank_results = [
-            (i, 0.0)
-            for i in range(len(rerank_input))
-        ]
+        # Sentinel score -1.0 is outside the [0,1] reranker range, so consumers
+        # can distinguish "reranker was down" from a genuine near-zero score.
+        rerank_results = [(i, -1.0) for i in range(len(rerank_input))]
 
     output: list[dict] = []
     for rerank_idx, rerank_score in rerank_results:
@@ -225,13 +225,18 @@ def do_search(
                 "score": rrf_score,                           # RRF fusion — backward compat
                 "sem": round(float(sem_arr[original_idx]), 4),
                 "lex": round(float(lex[original_idx]), 2),
-                "rerank": round(float(rerank_score), 4),      # cross-encoder score (0.0 on fallback)
+                "rerank": round(float(rerank_score), 4),      # cross-encoder score (-1.0 on fallback)
+                "reranker_used": reranker_used,               # consumers can distinguish fallback
                 "chunk_id": item["chunk_id"],
                 "start": item["start"],
                 "end": item["end"],
                 "snippet": make_snippet(item["text"], limit=snippet_chars),
             }
         )
+        # Early exit when no ext filter is active — avoid iterating the rest of
+        # the pool unnecessarily (e.g. 50-item pool with top_k=5).
+        if not allowed_exts and len(output) >= top_k:
+            break
 
     output = output[:top_k]
 
