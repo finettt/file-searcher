@@ -28,7 +28,7 @@ services:
       - ./models:/models
     command: >
       --host 0.0.0.0 --port 8000
-      -m /models/qwen3.5-4b-Q4_K_M.gguf
+      -m /models/Qwen3.5-0.8B-Q4_K_M.gguf
       --mmproj /models/mmproj-F16.gguf
       -c 8192 -ngl 99 -fa on -np 1 --cache-ram 0
       --image-min-tokens 1024 --image-max-tokens 2048 --reasoning off
@@ -49,7 +49,7 @@ services:
       - app-network
     volumes:
       - ./models:/models
-    command: ["--host", "0.0.0.0", "--port", "8000", "-m", "/models/nomic-embed.gguf", "-ngl", "99", "--embedding", "--alias", "${EMBEDDING_MODEL}", "--ubatch-size", "2048", "--batch-size", "2048"]
+    command: ["--host", "0.0.0.0", "--port", "8000", "-m", "/models/Qwen3-Embedding-0.6B-Q8_0.gguf", "-ngl", "99", "--embedding", "--alias", "${EMBEDDING_MODEL}", "--ubatch-size", "2048", "--batch-size", "2048", "-np", "1", "--cache-ram", "0"]
     restart: unless-stopped
     depends_on:
       llamacpp-ocr:
@@ -79,6 +79,29 @@ services:
       llamacpp:
         condition: service_healthy
 
+  # 3a. Cross-encoder reranker (CPU, Qwen3-Reranker-0.6B)
+  llamacpp-reranker:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "8004:8000"
+    networks:
+      - app-network
+    volumes:
+      - ./models:/models
+    command: >
+      --host 0.0.0.0 --port 8000
+      -m /models/qwen3-reranker-0.6b-q8_0.gguf
+      -ngl 99 --rerank
+      --alias Qwen3-Reranker-0.6B
+      --batch-size 2048 --ubatch-size 2048
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
   # 4. Indexer service (owns search, rebuild, diff, file preview, progress)
   indexer:
     build:
@@ -98,6 +121,8 @@ services:
       - FILEBROWSER_URL=${FILEBROWSER_URL:-http://filebrowser:80}
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-file_searcher}
+      - RERANKER_BASE_URL=${RERANKER_BASE_URL:-http://llamacpp-reranker:8000/v1}
+      - RERANKER_MODEL=${RERANKER_MODEL:-Qwen3-Reranker-0.6B}
     volumes:
       - ${DATA_DIR}:/data:ro
     command: ["main_indexer.py", "/data", "--port", "8002", "--filebrowser-url", "${FILEBROWSER_URL:-http://filebrowser:80}", "--verbose"]
@@ -106,6 +131,8 @@ services:
       llamacpp:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      llamacpp-reranker:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/api/health"]

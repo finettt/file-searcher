@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -200,3 +200,76 @@ class TestIndexerApp:
         app = self._make_app()
         assert isinstance(app.state.ctx.cancel_event, threading.Event)
         assert not app.state.ctx.cancel_event.is_set()
+
+    def test_reranker_health_url_construction(self):
+        """Health URL is derived from scheme+host+port only, ignoring path."""
+        from urllib.parse import urlparse, urlunparse
+
+        base_urls = [
+            "http://llamacpp-reranker:8000/v1",
+            "http://localhost:8004/v1/",
+            "http://host:1234/api/v2",
+        ]
+        for base_url in base_urls:
+            parsed = urlparse(base_url.rstrip("/"))
+            health_url = urlunparse(parsed._replace(path="/health", params="", query="", fragment=""))
+            assert health_url.endswith("/health")
+            assert "/v1" not in health_url
+            assert "/api" not in health_url
+
+    def test_reranker_health_endpoint_ok(self):
+        """GET /api/reranker-health returns 200 when reranker is reachable."""
+        import httpx
+
+        app = self._make_app()
+        client = TestClient(app)
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        mock_async_cls = MagicMock()
+        mock_async_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(httpx, "AsyncClient", mock_async_cls):
+            response = client.get("/api/reranker-health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "ok"
+        assert "reranker_url" in data
+
+    def test_reranker_health_endpoint_unreachable(self):
+        """GET /api/reranker-health returns 503 when reranker is not reachable."""
+        import httpx
+
+        app = self._make_app()
+        client = TestClient(app)
+
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
+
+        mock_async_cls = MagicMock()
+        mock_async_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_cls.return_value.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(httpx, "AsyncClient", mock_async_cls):
+            response = client.get("/api/reranker-health")
+
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "unreachable"
+        assert "reranker_url" in data
+
+    def test_state_has_reranker_config(self):
+        """Reranker base URL and model are stored in app state."""
+        app = self._make_app()
+        ctx = app.state.ctx
+        assert hasattr(ctx, "reranker_base_url")
+        assert hasattr(ctx, "reranker_model")
+        assert "localhost" in ctx.reranker_base_url or "llamacpp" in ctx.reranker_base_url
+
+

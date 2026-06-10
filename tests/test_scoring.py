@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.scoring import RRF_K, bm25_scores, rank_by_chunk, rank_by_file, rrf_fusion, tokenize
+from app.scoring import RRF_K, bm25_scores, bm25_top_k, rank_by_chunk, rank_by_file, rrf_fusion, tokenize
 
 
 class TestTokenize:
@@ -170,3 +170,43 @@ class TestRrfFusion:
         params = list(sig.parameters)
         assert "lexical_weight" not in params
         assert "weight" not in params
+
+
+class TestBm25TopK:
+    def test_returns_correct_number_of_indices(self):
+        scores = np.array([0.1, 0.5, 0.3, 0.9, 0.2], dtype=np.float32)
+        result = bm25_top_k(scores, top_k=3)
+        assert len(result) == 3
+
+    def test_returns_top_indices_by_score_descending(self):
+        scores = np.array([0.1, 0.5, 0.3, 0.9, 0.2], dtype=np.float32)
+        result = bm25_top_k(scores, top_k=3)
+        # Highest scores: index 3 (0.9), index 1 (0.5), index 2 (0.3)
+        assert result[0] == 3
+        assert result[1] == 1
+        assert result[2] == 2
+
+    def test_returns_empty_for_empty_scores(self):
+        result = bm25_top_k(np.array([], dtype=np.float32), top_k=5)
+        assert result == []
+
+    def test_clamps_top_k_to_available_items(self):
+        scores = np.array([0.9, 0.5], dtype=np.float32)
+        result = bm25_top_k(scores, top_k=10)
+        assert len(result) == 2
+
+    def test_returns_list_of_ints(self):
+        scores = np.array([0.4, 0.8, 0.2], dtype=np.float32)
+        result = bm25_top_k(scores, top_k=2)
+        for idx in result:
+            assert isinstance(idx, int)
+
+    def test_single_item(self):
+        scores = np.array([0.7], dtype=np.float32)
+        result = bm25_top_k(scores, top_k=1)
+        assert result == [0]
+
+    def test_top_k_zero_returns_empty(self):
+        scores = np.array([0.9, 0.5], dtype=np.float32)
+        result = bm25_top_k(scores, top_k=0)
+        assert result == []

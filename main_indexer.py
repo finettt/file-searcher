@@ -37,6 +37,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.getenv("FILEBROWSER_URL", ""),
         help="FileBrowser base URL for file links",
     )
+    parser.add_argument(
+        "--reranker-base-url",
+        default=os.getenv("RERANKER_BASE_URL", "http://localhost:8004/v1"),
+        help="Base URL of the llama.cpp reranker service (e.g. http://llamacpp-reranker:8000/v1)",
+    )
+    parser.add_argument(
+        "--reranker-model",
+        default=os.getenv("RERANKER_MODEL", "Qwen3-Reranker-0.6B"),
+        help="Model alias used by the reranker server",
+    )
 
     # ── Logging ────────────────────────────────────────────────
     log_group = parser.add_argument_group("logging")
@@ -77,6 +87,7 @@ def main() -> None:
     log.info("  chunk_size : %d  overlap: %d", args.chunk_size, args.overlap)
     log.info("  batch_size : %d", args.batch_size)
     log.info("  log_level  : %s%s", args.log_level, " (verbose)" if args.verbose else "")
+    log.info("  reranker   : %s  model=%s", args.reranker_base_url, args.reranker_model)
 
     from app.indexer_api import create_indexer_app, run_indexer
 
@@ -100,6 +111,8 @@ def main() -> None:
         by_chunk=args.by_chunk,
         snippet_chars=args.snippet_chars,
         filebrowser_url=args.filebrowser_url,
+        reranker_base_url=args.reranker_base_url,
+        reranker_model=args.reranker_model,
     )
     run_indexer(app)
 
