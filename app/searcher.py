@@ -41,7 +41,7 @@ def _build_rerank_pool(
     keeping up to ``top_k * 4`` unique files, capped by the reranker pool size.
     """
     if by_chunk:
-        return bm25_top_k(scores, chunks, DEFAULT_RERANKER_TOP_CANDIDATES)
+        return bm25_top_k(scores, DEFAULT_RERANKER_TOP_CANDIDATES)
 
     unique_file_limit = min(DEFAULT_RERANKER_TOP_CANDIDATES, top_k * 4)
     return [idx for idx, _ in rank_by_file(scores, chunks, unique_file_limit)]
@@ -63,12 +63,17 @@ def do_search(
 ) -> list[dict]:
     """Run hybrid search against Qdrant and rerank with a cross-encoder.
 
+    Pipeline:
     1. Embed query → search Qdrant for top candidates (semantic)
     2. Score returned chunks with BM25 (lexical)
     3. Fuse semantic + lexical rankings with RRF
     4. Build reranker pool (top-50 chunks or top_k*4 unique files)
-    5. Cross-encode with llama.cpp ``/v1/rerank``
-    6. Apply optional extension filter and return final results
+    5. Cross-encode with llama.cpp ``/v1/rerank``; fall back to RRF order on failure
+    6. Apply optional extension filter and return top-k results
+
+    The ``score`` field in each result contains the RRF fusion score for
+    backward compatibility. ``rerank`` contains the cross-encoder score (0.0
+    when the reranker is unavailable and the RRF fallback is used).
     """
     t0 = time.monotonic()
     api_key = api_key or os.getenv("OPENAI_API_KEY", "")
@@ -178,13 +183,29 @@ def do_search(
         return []
 
     rerank_input = [chunks[idx] for idx in rerank_pool_indices]
-    rerank_results = rerank_chunks(
-        query,
-        rerank_input,
-        base_url=reranker_base_url,
-        model=reranker_model,
-        top_n=min(top_k, len(rerank_input)),
-    )
+
+    # Cross-encoder rerank — fall back to RRF order when the reranker is down
+    reranker_used = True
+    try:
+        # Request all pool scores; we apply top_k after ext_filter so we don't
+        # lose results to pre-filter truncation.
+        rerank_results = rerank_chunks(
+            query,
+            rerank_input,
+            base_url=reranker_base_url,
+            model=reranker_model,
+        )
+    except Exception as exc:
+        log.warning(
+            "reranker unavailable (%s), falling back to RRF order",
+            exc,
+        )
+        reranker_used = False
+        # Synthesize RRF-ordered results with sentinel rerank score of 0.0
+        rerank_results = [
+            (i, 0.0)
+            for i in range(len(rerank_input))
+        ]
 
     output: list[dict] = []
     for rerank_idx, rerank_score in rerank_results:
@@ -196,29 +217,30 @@ def do_search(
             if ext not in allowed_exts:
                 continue
 
-        final_score = round(float(rerank_score), 4)
+        rrf_score = round(float(scores[original_idx]), 4)
         output.append(
             {
                 "rank": len(output) + 1,
                 "path": item["path"],
-                "score": final_score,
+                "score": rrf_score,                           # RRF fusion — backward compat
                 "sem": round(float(sem_arr[original_idx]), 4),
                 "lex": round(float(lex[original_idx]), 2),
-                "rerank": final_score,
+                "rerank": round(float(rerank_score), 4),      # cross-encoder score (0.0 on fallback)
                 "chunk_id": item["chunk_id"],
                 "start": item["start"],
                 "end": item["end"],
                 "snippet": make_snippet(item["text"], limit=snippet_chars),
             }
         )
-        if len(output) >= top_k:
-            break
+
+    output = output[:top_k]
 
     total_dt = time.monotonic() - t0
     log.info(
-        "search end  returned=%d rerank_pool=%d total=%.3fs",
+        "search end  returned=%d rerank_pool=%d reranker_used=%s total=%.3fs",
         len(output),
         len(rerank_pool_indices),
+        reranker_used,
         total_dt,
     )
     for item in output[: min(5, len(output))]:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 
 # Deterministic reranker mock: returns items in original order with descending scores
 def _mock_rerank(query, chunks, *, base_url, model="Qwen3-Reranker-0.6B", top_n=None):
@@ -272,8 +274,8 @@ class TestDoSearch:
         assert call["model"] == "Qwen3-Reranker-0.6B"
         assert isinstance(call["chunks"], list)
 
-    def test_rerank_score_exposed_in_output(self):
-        """Test that the rerank score is included in each result item."""
+    def test_score_is_rrf_and_rerank_is_crossencoder(self):
+        """Test that 'score' contains RRF and 'rerank' contains cross-encoder score."""
         mock_qdrant = MagicMock()
         mock_qdrant.collection_exists.return_value = True
         mock_qdrant.count.return_value = 10
@@ -290,10 +292,10 @@ class TestDoSearch:
         }
         mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
 
-        fixed_score = 0.8765
+        fixed_rerank_score = 0.8765
 
         def fixed_rerank(query, chunks, *, base_url, model, top_n=None):
-            return [(0, fixed_score)]
+            return [(0, fixed_rerank_score)]
 
         with (
             patch("app.searcher.build_client") as mock_build,
@@ -316,5 +318,106 @@ class TestDoSearch:
             )
 
         assert len(result) == 1
-        assert result[0]["rerank"] == round(fixed_score, 4)
-        assert result[0]["score"] == round(fixed_score, 4)
+        # rerank = cross-encoder score
+        assert result[0]["rerank"] == round(fixed_rerank_score, 4)
+        # score = RRF fusion score, which differs from the cross-encoder score
+        assert result[0]["score"] != result[0]["rerank"]
+        assert result[0]["score"] > 0
+
+    def test_fallback_to_rrf_when_reranker_unavailable(self):
+        """Test that search falls back to RRF ordering when reranker is down."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = True
+        mock_qdrant.count.return_value = 10
+
+        mock_point = MagicMock()
+        mock_point.score = 0.95
+        mock_point.payload = {
+            "path": "test.txt",
+            "abs_path": "/tmp/test.txt",
+            "chunk_id": 0,
+            "start": 0,
+            "end": 100,
+            "text": "test content for fallback",
+        }
+        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
+
+        def failing_rerank(query, chunks, *, base_url, model, top_n=None):
+            raise httpx.ConnectError("Connection refused")
+
+        with (
+            patch("app.searcher.build_client") as mock_build,
+            patch("app.searcher.rerank_chunks", side_effect=failing_rerank),
+        ):
+            mock_client = MagicMock()
+            mock_build.return_value = mock_client
+            mock_resp = MagicMock()
+            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
+            mock_client.embeddings.create.return_value = mock_resp
+
+            from app.searcher import do_search
+
+            result = do_search(
+                mock_qdrant,
+                "test query",
+                model="test-model",
+                api_key="test-key",
+                **RERANKER_KWARGS,
+            )
+
+        # Should still return results (via RRF fallback)
+        assert len(result) == 1
+        assert result[0]["path"] == "test.txt"
+        # Rerank score should be 0.0 (sentinel for fallback)
+        assert result[0]["rerank"] == 0.0
+        # RRF score should still be present
+        assert result[0]["score"] > 0
+
+    def test_no_top_n_passed_to_reranker(self):
+        """Verify reranker receives no top_n so ext_filter doesn't lose results."""
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = True
+        mock_qdrant.count.return_value = 10
+
+        mock_point = MagicMock()
+        mock_point.score = 0.95
+        mock_point.payload = {
+            "path": "test.txt",
+            "abs_path": "/tmp/test.txt",
+            "chunk_id": 0,
+            "start": 0,
+            "end": 100,
+            "text": "some text",
+        }
+        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
+
+        captured_kwargs = []
+
+        def capturing_rerank(query, chunks, *, base_url, model, top_n=None):
+            captured_kwargs.append({"top_n": top_n})
+            return _mock_rerank(query, chunks, base_url=base_url, model=model, top_n=top_n)
+
+        with (
+            patch("app.searcher.build_client") as mock_build,
+            patch("app.searcher.rerank_chunks", side_effect=capturing_rerank),
+        ):
+            mock_client = MagicMock()
+            mock_build.return_value = mock_client
+            mock_resp = MagicMock()
+            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
+            mock_client.embeddings.create.return_value = mock_resp
+
+            from app.searcher import do_search
+
+            do_search(
+                mock_qdrant,
+                "query",
+                model="test-model",
+                api_key="test-key",
+                top_k=3,
+                **RERANKER_KWARGS,
+            )
+
+        assert len(captured_kwargs) == 1
+        # top_n should NOT be passed (None) so all pool results come back
+        assert captured_kwargs[0]["top_n"] is None

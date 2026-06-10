@@ -173,49 +173,40 @@ class TestRrfFusion:
 
 
 class TestBm25TopK:
-    def _make_chunks(self, n: int) -> list[dict]:
-        return [{"text": f"chunk {i}", "path": f"file{i}.txt"} for i in range(n)]
-
     def test_returns_correct_number_of_indices(self):
         scores = np.array([0.1, 0.5, 0.3, 0.9, 0.2], dtype=np.float32)
-        chunks = self._make_chunks(5)
-        result = bm25_top_k(scores, chunks, top_k=3)
+        result = bm25_top_k(scores, top_k=3)
         assert len(result) == 3
 
     def test_returns_top_indices_by_score_descending(self):
         scores = np.array([0.1, 0.5, 0.3, 0.9, 0.2], dtype=np.float32)
-        chunks = self._make_chunks(5)
-        result = bm25_top_k(scores, chunks, top_k=3)
+        result = bm25_top_k(scores, top_k=3)
         # Highest scores: index 3 (0.9), index 1 (0.5), index 2 (0.3)
         assert result[0] == 3
         assert result[1] == 1
         assert result[2] == 2
 
     def test_returns_empty_for_empty_scores(self):
-        result = bm25_top_k(np.array([], dtype=np.float32), [], top_k=5)
+        result = bm25_top_k(np.array([], dtype=np.float32), top_k=5)
         assert result == []
 
     def test_clamps_top_k_to_available_items(self):
         scores = np.array([0.9, 0.5], dtype=np.float32)
-        chunks = self._make_chunks(2)
-        result = bm25_top_k(scores, chunks, top_k=10)
+        result = bm25_top_k(scores, top_k=10)
         assert len(result) == 2
 
     def test_returns_list_of_ints(self):
         scores = np.array([0.4, 0.8, 0.2], dtype=np.float32)
-        chunks = self._make_chunks(3)
-        result = bm25_top_k(scores, chunks, top_k=2)
+        result = bm25_top_k(scores, top_k=2)
         for idx in result:
             assert isinstance(idx, int)
 
     def test_single_item(self):
         scores = np.array([0.7], dtype=np.float32)
-        chunks = self._make_chunks(1)
-        result = bm25_top_k(scores, chunks, top_k=1)
+        result = bm25_top_k(scores, top_k=1)
         assert result == [0]
 
     def test_top_k_zero_returns_empty(self):
         scores = np.array([0.9, 0.5], dtype=np.float32)
-        chunks = self._make_chunks(2)
-        result = bm25_top_k(scores, chunks, top_k=0)
+        result = bm25_top_k(scores, top_k=0)
         assert result == []

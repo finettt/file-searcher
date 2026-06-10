@@ -9,7 +9,9 @@ from collections import deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -475,13 +477,16 @@ def create_indexer_app(
 
         Returns 200 with ``{"status": "ok"}`` when the reranker is reachable,
         or 503 with an error detail when it is not.
-        """
-        import httpx as _httpx
 
+        The health URL is derived by taking only the scheme+host+port of
+        ``RERANKER_BASE_URL`` and appending ``/health``.  This is safe
+        regardless of any path suffix in the configured base URL.
+        """
         ctx = _get_ctx(request)
-        health_url = ctx.reranker_base_url.rstrip("/rerank").rstrip("/v1").rstrip("/") + "/health"
+        parsed = urlparse(ctx.reranker_base_url.rstrip("/"))
+        health_url = urlunparse(parsed._replace(path="/health", params="", query="", fragment=""))
         try:
-            async with _httpx.AsyncClient(timeout=5.0) as hc:
+            async with httpx.AsyncClient(timeout=5.0) as hc:
                 resp = await hc.get(health_url)
                 resp.raise_for_status()
             return JSONResponse(content={"status": "ok", "reranker_url": ctx.reranker_base_url})

@@ -11,13 +11,12 @@ from .logging_config import get_logger
 log = get_logger(__name__)
 
 # Qwen3-Reranker prepends an instruction prompt of ~100 tokens to every
-# document.  At ~3 chars/token a 1200-char chunk ≈ 400 doc-tokens, which
-# already puts the combined input close to the default llama.cpp batch size
-# of 512.  We cap document text at this character limit so the client
-# never sends more than ~500 tokens per document regardless of server
-# configuration.  The compose files also set --batch-size 2048 as the
-# primary remedy; this guard is defense-in-depth.
-MAX_DOC_CHARS = 1800  # ≈ 600 tokens — stays comfortably within 2048
+# document.  At ~3 chars/token, 1800 chars ≈ 600 doc-tokens; adding the
+# ~100-token instruction prefix keeps the total input well within the
+# --batch-size 2048 set in the compose files.  This guard is
+# defense-in-depth against edge cases where individual chunks are unusually
+# large.
+MAX_DOC_CHARS = 1800  # ≈ 600 doc-tokens + ~100 prompt tokens < 2048
 
 
 def rerank(

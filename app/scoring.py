@@ -130,26 +130,26 @@ def rank_by_chunk(
     scores: np.ndarray,
     top_k: int,
 ) -> list[tuple[int, float]]:
-    """Rank individual chunks by score. Returns [(chunk_idx, score), …]."""
+    """Rank individual chunks by score. Returns [(chunk_idx, score), …].
+
+    Part of the public scoring API; retained for callers that do not use the
+    cross-encoder reranker path.
+    """
     top_idx = np.argsort(-scores)[:top_k]
     return [(int(i), float(scores[i])) for i in top_idx]
 
 
 def bm25_top_k(
     scores: np.ndarray,
-    chunks: list[dict],
     top_k: int,
 ) -> list[int]:
     """Return the indices of the top-*k* chunks ranked by RRF/BM25 score.
 
     Used to slice the candidate pool before feeding it to the cross-encoder
-    reranker.  When ``by_chunk=False`` (file-dedup mode) the caller should
-    pass a pre-deduped chunk list so that the returned indices are already
-    unique per file.
+    reranker.
 
     Args:
         scores: Combined RRF scores (or any float array, higher = better).
-        chunks: Corresponding chunk dicts (same order as *scores*).
         top_k: Maximum number of indices to return.
 
     Returns:

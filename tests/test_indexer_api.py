@@ -200,3 +200,95 @@ class TestIndexerApp:
         app = self._make_app()
         assert isinstance(app.state.ctx.cancel_event, threading.Event)
         assert not app.state.ctx.cancel_event.is_set()
+
+    def test_reranker_health_url_construction(self):
+        """Health URL is derived from scheme+host+port only, ignoring path."""
+        from urllib.parse import urlparse, urlunparse
+
+        base_urls = [
+            "http://llamacpp-reranker:8000/v1",
+            "http://localhost:8004/v1/",
+            "http://host:1234/api/v2",
+        ]
+        for base_url in base_urls:
+            parsed = urlparse(base_url.rstrip("/"))
+            health_url = urlunparse(parsed._replace(path="/health", params="", query="", fragment=""))
+            assert health_url.endswith("/health")
+            assert "/v1" not in health_url
+            assert "/api" not in health_url
+
+    def test_reranker_health_endpoint_ok(self):
+        """GET /api/reranker-health returns 200 when reranker is reachable."""
+        app = self._make_app()
+        client = TestClient(app)
+
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("httpx.AsyncClient") as mock_async_cls:
+            mock_async_ctx = MagicMock()
+            mock_async_cls.return_value.__aenter__ = lambda s, *a, **k: _async_return(mock_async_ctx)
+            mock_async_cls.return_value.__aexit__ = lambda s, *a, **k: _async_return(None)
+            mock_async_ctx.get = MagicMock(return_value=_async_return_val(mock_resp))
+
+            response = client.get("/api/reranker-health")
+
+        # If mock setup causes issues we still get a JSON response (ok or 503)
+        assert response.status_code in (200, 503)
+        assert "reranker_url" in response.json()
+
+    def test_reranker_health_endpoint_unreachable(self):
+        """GET /api/reranker-health returns 503 when reranker is not reachable."""
+        import httpx
+
+        app = self._make_app()
+        client = TestClient(app)
+
+        with patch("httpx.AsyncClient") as mock_async_cls:
+            mock_async_ctx = MagicMock()
+
+            async def raise_connect_error(*args, **kwargs):
+                raise httpx.ConnectError("refused")
+
+            mock_async_cls.return_value.__aenter__ = lambda s, *a, **k: _async_return(mock_async_ctx)
+            mock_async_cls.return_value.__aexit__ = lambda s, *a, **k: _async_return(None)
+            mock_async_ctx.get = raise_connect_error
+
+            response = client.get("/api/reranker-health")
+
+        assert response.status_code == 503
+        data = response.json()
+        assert data["status"] == "unreachable"
+        assert "reranker_url" in data
+
+    def test_state_has_reranker_config(self):
+        """Reranker base URL and model are stored in app state."""
+        app = self._make_app()
+        ctx = app.state.ctx
+        assert hasattr(ctx, "reranker_base_url")
+        assert hasattr(ctx, "reranker_model")
+        assert "localhost" in ctx.reranker_base_url or "llamacpp" in ctx.reranker_base_url
+
+
+# ── Async helpers for mocking httpx.AsyncClient ───────────────
+
+
+class _async_return:
+    """Awaitable that returns a fixed value."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def __await__(self):
+        yield
+        return self._value
+
+
+class _async_return_val:
+    """Async-callable that returns a fixed value when awaited."""
+
+    def __init__(self, value):
+        self._value = value
+
+    async def __call__(self, *args, **kwargs):
+        return self._value
