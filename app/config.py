@@ -35,6 +35,12 @@ DEFAULT_PORT = 8000
 DEFAULT_QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 DEFAULT_QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "file_searcher")
 
+# ── Reranker ──────────────────────────────────────────────────
+
+DEFAULT_RERANKER_URL = os.getenv("RERANKER_BASE_URL", "http://localhost:8004/v1")
+DEFAULT_RERANKER_MODEL = os.getenv("RERANKER_MODEL", "Qwen3-Reranker-0.6B")
+DEFAULT_RERANKER_TOP_CANDIDATES = 50  # BM25 pool size fed to cross-encoder
+
 # ── Paths ─────────────────────────────────────────────────────
 
 TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"

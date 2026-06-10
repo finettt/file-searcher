@@ -23,6 +23,8 @@ from .config import (
     DEFAULT_OVERLAP,
     DEFAULT_QDRANT_COLLECTION,
     DEFAULT_QDRANT_URL,
+    DEFAULT_RERANKER_MODEL,
+    DEFAULT_RERANKER_URL,
     DEFAULT_SNIPPET_CHARS,
     DEFAULT_TOP_K,
 )
@@ -111,6 +113,8 @@ class IndexerState:
     by_chunk: bool
     snippet_chars: int
     filebrowser_url: str
+    reranker_base_url: str
+    reranker_model: str
 
     # Runtime mutable state
     rebuilding: bool = False
@@ -269,6 +273,8 @@ def create_indexer_app(
     by_chunk: bool = False,
     snippet_chars: int = DEFAULT_SNIPPET_CHARS,
     filebrowser_url: str = "",
+    reranker_base_url: str | None = None,
+    reranker_model: str | None = None,
 ) -> FastAPI:
     """Create and configure the indexer FastAPI application."""
 
@@ -284,6 +290,8 @@ def create_indexer_app(
     filebrowser_url = filebrowser_url or os.getenv("FILEBROWSER_URL", "")
     qdrant_url = qdrant_url or os.getenv("QDRANT_URL", DEFAULT_QDRANT_URL)
     qdrant_collection = qdrant_collection or os.getenv("QDRANT_COLLECTION", DEFAULT_QDRANT_COLLECTION)
+    reranker_base_url = reranker_base_url or os.getenv("RERANKER_BASE_URL", DEFAULT_RERANKER_URL)
+    reranker_model = reranker_model or os.getenv("RERANKER_MODEL", DEFAULT_RERANKER_MODEL)
 
     qdrant = cache.QdrantIndex(url=qdrant_url, collection=qdrant_collection)
 
@@ -306,6 +314,8 @@ def create_indexer_app(
         by_chunk=by_chunk,
         snippet_chars=snippet_chars,
         filebrowser_url=filebrowser_url,
+        reranker_base_url=reranker_base_url,
+        reranker_model=reranker_model,
     )
 
     app = FastAPI(title="File Searcher — Indexer", lifespan=_lifespan)
@@ -438,6 +448,8 @@ def create_indexer_app(
                 model=ctx.model,
                 api_key=ctx.api_key,
                 base_url=ctx.base_url,
+                reranker_base_url=ctx.reranker_base_url,
+                reranker_model=ctx.reranker_model,
                 top_k=top_k_val,
                 by_chunk=body.by_chunk,
                 snippet_chars=ctx.snippet_chars,
@@ -445,7 +457,7 @@ def create_indexer_app(
             )
         except Exception as e:
             log.error("Search error: %s", e, exc_info=True)
-            return JSONResponse(status_code=500, content={"detail": str(e)})
+            return JSONResponse(status_code=503, content={"detail": str(e)})
 
         info = ctx.qdrant.get_info()
         return JSONResponse(
@@ -456,6 +468,28 @@ def create_indexer_app(
                 "filebrowser_url": ctx.filebrowser_url,
             }
         )
+
+    @app.get("/api/reranker-health")
+    async def api_reranker_health(request: Request):
+        """Probe the reranker service health endpoint.
+
+        Returns 200 with ``{"status": "ok"}`` when the reranker is reachable,
+        or 503 with an error detail when it is not.
+        """
+        import httpx as _httpx
+
+        ctx = _get_ctx(request)
+        health_url = ctx.reranker_base_url.rstrip("/rerank").rstrip("/v1").rstrip("/") + "/health"
+        try:
+            async with _httpx.AsyncClient(timeout=5.0) as hc:
+                resp = await hc.get(health_url)
+                resp.raise_for_status()
+            return JSONResponse(content={"status": "ok", "reranker_url": ctx.reranker_base_url})
+        except Exception as exc:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unreachable", "detail": str(exc), "reranker_url": ctx.reranker_base_url},
+            )
 
     @app.post("/api/rebuild")
     async def api_rebuild(request: Request):

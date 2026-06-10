@@ -63,6 +63,7 @@ class SearchResultItem(BaseModel):
     score: float
     sem: float
     lex: float
+    rerank: float = 0.0
     chunk_id: int
     start: int
     end: int

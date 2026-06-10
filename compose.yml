@@ -95,6 +95,37 @@ services:
       llamacpp:
         condition: service_healthy
 
+  # 3a. Cross-encoder reranker (GPU, Qwen3-Reranker-0.6B)
+  llamacpp-reranker:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    ports:
+      - "8004:8000"
+    networks:
+      - app-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: cdi
+              capabilities: [gpu]
+              device_ids:
+                - nvidia.com/gpu=all
+    volumes:
+      - ./models:/models
+    command: >
+      --host 0.0.0.0 --port 8000
+      -m /models/Qwen3-Reranker-0.6B-Q4_K_M.gguf
+      -ngl 99 --rerank
+      --alias Qwen3-Reranker-0.6B
+      --batch-size 2048 --ubatch-size 2048
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
   # 4. Indexer service (owns search, rebuild, diff, file preview, progress)
   indexer:
     image: ghcr.io/finettt/file-searcher:stable
@@ -111,6 +142,8 @@ services:
       - FILEBROWSER_URL=${FILEBROWSER_URL:-http://filebrowser:80}
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-file_searcher}
+      - RERANKER_BASE_URL=${RERANKER_BASE_URL:-http://llamacpp-reranker:8000/v1}
+      - RERANKER_MODEL=${RERANKER_MODEL:-Qwen3-Reranker-0.6B}
     volumes:
       - ${DATA_DIR}:/data:ro
     command: ["main_indexer.py", "/data", "--port", "8002", "--filebrowser-url", "${FILEBROWSER_URL:-http://filebrowser:80}"]
@@ -119,6 +152,8 @@ services:
       llamacpp:
         condition: service_healthy
       qdrant:
+        condition: service_healthy
+      llamacpp-reranker:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/api/health"]
