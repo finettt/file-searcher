@@ -38,6 +38,7 @@ from .models import (
     SearchRequest,
 )
 from .progress import ProgressTracker
+from .log_utils import get_log_config
 from .searcher import do_search
 
 log = get_logger(__name__)
@@ -277,6 +278,7 @@ def create_indexer_app(
     filebrowser_url: str = "",
     reranker_base_url: str | None = None,
     reranker_model: str | None = None,
+    hide_health: bool = False,
 ) -> FastAPI:
     """Create and configure the indexer FastAPI application."""
 
@@ -322,6 +324,7 @@ def create_indexer_app(
 
     app = FastAPI(title="File Searcher — Indexer", lifespan=_lifespan)
     app.state.ctx = ctx
+    app.state.hide_health = hide_health
     app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
     # ── Routes ────────────────────────────────────────────────
@@ -580,4 +583,13 @@ def run_indexer(app: FastAPI) -> None:
     log.info("Indexer service → http://%s:%s", ctx.host, ctx.port)
     log.info("FileBrowser → %s", ctx.filebrowser_url or "(not configured)")
     log.info("Qdrant → %s", ctx.qdrant.url)
-    uvicorn.run(app, host=ctx.host, port=ctx.port, log_level="info")
+    uvicorn.run(
+        app,
+        host=ctx.host,
+        port=ctx.port,
+        log_level="info",
+        log_config=get_log_config(
+            hide_health=app.state.hide_health,
+            health_paths=("/api/health", "/api/reranker-health"),
+        ),
+    )

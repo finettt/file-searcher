@@ -47,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.getenv("RERANKER_MODEL", "Qwen3-Reranker-0.6B"),
         help="Model alias used by the reranker server",
     )
+    parser.add_argument(
+        "--hide-health",
+        action="store_true",
+        default=os.getenv("HIDE_HEALTH", "").lower() in ("1", "true", "yes"),
+        help="Suppress access logs for health check endpoints",
+    )
 
     # ── Logging ────────────────────────────────────────────────
     log_group = parser.add_argument_group("logging")
@@ -113,6 +119,7 @@ def main() -> None:
         filebrowser_url=args.filebrowser_url,
         reranker_base_url=args.reranker_base_url,
         reranker_model=args.reranker_model,
+        hide_health=args.hide_health,
     )
     run_indexer(app)
 

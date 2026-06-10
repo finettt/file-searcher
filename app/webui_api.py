@@ -19,6 +19,7 @@ from .config import (
     DEFAULT_PORT,
     TEMPLATE_DIR,
 )
+from .log_utils import get_log_config
 from .logging_config import get_logger
 from .models import ExportRequest
 
@@ -46,6 +47,7 @@ def create_webui_app(
     indexer_url: str | None = None,
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
+    hide_health: bool = False,
 ) -> FastAPI:
     """Create and configure the web UI gateway FastAPI application.
 
@@ -60,6 +62,7 @@ def create_webui_app(
     app.state.host = host
     app.state.port = port
     app.state.html_template = html_template
+    app.state.hide_health = hide_health
     app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
     # Shared async HTTP client (connection-pooled, reused across requests)
@@ -226,4 +229,13 @@ def run_webui(app: FastAPI) -> None:
     indexer_url = app.state.indexer_url
     log.info("Web UI → http://%s:%s", host, port)
     log.info("Indexer → %s", indexer_url)
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    uvicorn.run(
+        app,
+        host=host,
+        port=port,
+        log_level="info",
+        log_config=get_log_config(
+            hide_health=app.state.hide_health,
+            health_paths=("/api/health",),
+        ),
+    )

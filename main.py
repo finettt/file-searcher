@@ -38,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=os.getenv("FILEBROWSER_URL", ""),
         help="FileBrowser base URL for file links",
     )
+    parser.add_argument(
+        "--hide-health",
+        action="store_true",
+        default=os.getenv("HIDE_HEALTH", "").lower() in ("1", "true", "yes"),
+        help="Suppress access logs for health check endpoints",
+    )
 
     # ── Logging ────────────────────────────────────────────────
     log_group = parser.add_argument_group("logging")
@@ -108,6 +114,7 @@ def main() -> None:
         by_chunk=args.by_chunk,
         snippet_chars=args.snippet_chars,
         filebrowser_url=args.filebrowser_url,
+        hide_health=args.hide_health,
     )
     run_app(app)
 

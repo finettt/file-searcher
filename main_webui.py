@@ -20,6 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default=os.getenv("HOST", "0.0.0.0"))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", "8001")))
+    parser.add_argument(
+        "--hide-health",
+        action="store_true",
+        default=os.getenv("HIDE_HEALTH", "").lower() in ("1", "true", "yes"),
+        help="Suppress access logs for health check endpoint",
+    )
 
     # ── Logging ────────────────────────────────────────────────
     log_group = parser.add_argument_group("logging")
@@ -58,6 +64,7 @@ def main() -> None:
         indexer_url=args.indexer_url,
         host=args.host,
         port=args.port,
+        hide_health=args.hide_health,
     )
     run_webui(app)
 

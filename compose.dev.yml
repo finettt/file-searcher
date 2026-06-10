@@ -123,6 +123,7 @@ services:
       - QDRANT_COLLECTION=${QDRANT_COLLECTION:-file_searcher}
       - RERANKER_BASE_URL=${RERANKER_BASE_URL:-http://llamacpp-reranker:8000/v1}
       - RERANKER_MODEL=${RERANKER_MODEL:-Qwen3-Reranker-0.6B}
+      - HIDE_HEALTH=${HIDE_HEALTH:-false}
     volumes:
       - ${DATA_DIR}:/data:ro
     command: ["main_indexer.py", "/data", "--port", "8002", "--filebrowser-url", "${FILEBROWSER_URL:-http://filebrowser:80}", "--verbose"]
@@ -154,6 +155,7 @@ services:
       - app-network
     environment:
       - INDEXER_URL=http://indexer:8002
+      - HIDE_HEALTH=${HIDE_HEALTH:-false}
     command: ["main_webui.py", "--port", "8001", "--indexer-url", "http://indexer:8002", "--verbose"]
     restart: unless-stopped
     depends_on:
