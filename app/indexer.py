@@ -18,11 +18,14 @@ from .chunking import chunk_text, clean_text, make_embed_input
 from .config import (
     DEFAULT_BATCH_SIZE,
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_DENSE_VECTOR_NAME,
     DEFAULT_OVERLAP,
+    DEFAULT_SPARSE_VECTOR_NAME,
 )
 from .extractors import extract_text
 from .logging_config import get_logger
 from .progress import ProgressEvent, ProgressTracker
+from .scoring import document_sparse_vector
 
 log = get_logger(__name__)
 
@@ -137,16 +140,22 @@ def _upsert_batch(
     qdrant: QdrantIndex,
     chunks: list[dict],
     embeddings: np.ndarray,
+    sparse_vectors: list | None = None,
     cancel_event: threading.Event | None = None,
 ) -> None:
-    """Upsert a batch of chunks + embeddings into Qdrant."""
+    """Upsert a batch of chunks + embeddings + sparse vectors into Qdrant."""
     points = []
     for i, chunk in enumerate(chunks):
         point_id = str(uuid.uuid4())
+        vector_data: dict = {
+            DEFAULT_DENSE_VECTOR_NAME: embeddings[i].tolist(),
+        }
+        if sparse_vectors is not None:
+            vector_data[DEFAULT_SPARSE_VECTOR_NAME] = sparse_vectors[i]
         points.append(
             qmodels.PointStruct(
                 id=point_id,
-                vector=embeddings[i].tolist(),
+                vector=vector_data,
                 payload={
                     "path": chunk["path"],
                     "abs_path": chunk["abs_path"],
@@ -398,6 +407,13 @@ def build_index(
     embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size, cancel_event=cancel_event)
     embeddings = l2_normalize_matrix(embeddings)
 
+    # Compute sparse vectors for native hybrid search
+    log.info("Computing sparse vectors for %d chunks…", len(chunks_meta))
+    sparse_vectors = [
+        document_sparse_vector(chunk["text"], chunk.get("path", ""))
+        for chunk in chunks_meta
+    ]
+
     if progress:
         yield progress.set_phase("saving", "Saving to Qdrant…")
     if cancel_event and cancel_event.is_set():
@@ -406,7 +422,7 @@ def build_index(
     vector_size = embeddings.shape[1]
     log.info("Recreating Qdrant collection (vector_size=%d)", vector_size)
     qdrant.recreate_collection(vector_size)
-    _upsert_batch(qdrant, chunks_meta, embeddings, cancel_event=cancel_event)
+    _upsert_batch(qdrant, chunks_meta, embeddings, sparse_vectors=sparse_vectors, cancel_event=cancel_event)
 
     fs_hash = utils.compute_fs_hash(root, extensions)
     meta = {
@@ -609,10 +625,17 @@ def build_index_selective(
         new_embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size, cancel_event=cancel_event)
         new_embeddings = l2_normalize_matrix(new_embeddings)
 
+        # Compute sparse vectors for native hybrid search
+        log.info("Computing sparse vectors for %d new chunks…", len(new_chunks))
+        sparse_vectors = [
+            document_sparse_vector(chunk["text"], chunk.get("path", ""))
+            for chunk in new_chunks
+        ]
+
         # ensure_collection creates if missing, uses new embeddings' dim
         vector_size = new_embeddings.shape[1]
         qdrant.ensure_collection(vector_size)
-        _upsert_batch(qdrant, new_chunks, new_embeddings, cancel_event=cancel_event)
+        _upsert_batch(qdrant, new_chunks, new_embeddings, sparse_vectors=sparse_vectors, cancel_event=cancel_event)
     else:
         log.warning("No text extracted from any target file")
 
@@ -640,10 +663,13 @@ def build_index_selective(
     )
 
     # Get actual vector dim from Qdrant (may differ from embeddings if reused)
+    # Get actual vector dim from Qdrant (may differ from embeddings if reused)
     info = qdrant.client.get_collection(qdrant.collection)
     vec_cfg = info.config.params.vectors
     if isinstance(vec_cfg, qmodels.VectorParams):
         vector_size = vec_cfg.size
+    elif isinstance(vec_cfg, dict) and DEFAULT_DENSE_VECTOR_NAME in vec_cfg:
+        vector_size = vec_cfg[DEFAULT_DENSE_VECTOR_NAME].size
     else:
         vector_size = 768  # fallback
 

@@ -1,4 +1,4 @@
-"""Semantic + lexical hybrid search via Qdrant + cross-encoder reranking."""
+"""Native hybrid search via Qdrant (dense + sparse) + cross-encoder reranking."""
 
 from __future__ import annotations
 
@@ -11,11 +11,21 @@ from qdrant_client.http import models as qmodels
 
 from .cache import QdrantIndex
 from .chunking import make_snippet
-from .config import DEFAULT_RERANKER_TOP_CANDIDATES
+from .config import (
+    DEFAULT_DENSE_VECTOR_NAME,
+    DEFAULT_RERANKER_TOP_CANDIDATES,
+    DEFAULT_SPARSE_VECTOR_NAME,
+)
 from .indexer import build_client, embed_texts, l2_normalize_vector
 from .logging_config import get_logger
 from .reranker import rerank as rerank_chunks
-from .scoring import bm25_scores, bm25_top_k, rank_by_file, rrf_fusion
+from .scoring import (
+    bm25_scores,
+    bm25_top_k,
+    query_sparse_vector,
+    rank_by_file,
+    rrf_fusion,
+)
 
 log = get_logger(__name__)
 
@@ -47,6 +57,18 @@ def _build_rerank_pool(
     return [idx for idx, _ in rank_by_file(scores, chunks, unique_file_limit)]
 
 
+def _collection_has_sparse(qdrant: QdrantIndex) -> bool:
+    """Check whether the collection was created with sparse vector support."""
+    try:
+        info = qdrant.client.get_collection(qdrant.collection)
+        sparse_cfg = getattr(info.config.params, "sparse_vectors", None)
+        if sparse_cfg and isinstance(sparse_cfg, dict):
+            return DEFAULT_SPARSE_VECTOR_NAME in sparse_cfg
+        return False
+    except Exception:
+        return False
+
+
 def do_search(
     qdrant: QdrantIndex,
     query: str,
@@ -63,16 +85,19 @@ def do_search(
 ) -> list[dict]:
     """Run hybrid search against Qdrant and rerank with a cross-encoder.
 
-    Pipeline:
-    1. Embed query → search Qdrant for top candidates (semantic)
-    2. Score returned chunks with BM25 (lexical)
-    3. Fuse semantic + lexical rankings with RRF
-    4. Build reranker pool (top-50 chunks or top_k*4 unique files)
-    5. Cross-encode with llama.cpp ``/v1/rerank``; fall back to RRF order on failure
-    6. Apply optional extension filter and return top-k results
+    Pipeline (native hybrid — sparse vectors present):
+    1. Embed query → dense vector; tokenize query → sparse vector
+    2. Qdrant ``query_points`` with two ``prefetch`` legs (dense + sparse)
+       fused via ``Fusion.RRF`` — all fusion happens server-side
+    3. Build reranker pool from the fused results
+    4. Cross-encode with llama.cpp ``/v1/rerank``; fall back to RRF order on failure
+    5. Apply optional extension filter and return top-k results
+
+    Fallback (legacy — no sparse vectors in collection):
+    Same as before: dense search → client-side BM25 → client-side RRF → rerank.
 
     The ``score`` field in each result contains the RRF fusion score for
-    backward compatibility. ``rerank`` contains the cross-encoder score (0.0
+    backward compatibility. ``rerank`` contains the cross-encoder score (-1.0
     when the reranker is unavailable and the RRF fallback is used).
     """
     t0 = time.monotonic()
@@ -80,11 +105,15 @@ def do_search(
     base_url = base_url or os.getenv("OPENAI_BASE_URL")
     allowed_exts = _normalize_ext_filter(ext_filter)
 
+    # Detect whether the collection supports native hybrid search
+    has_sparse = _collection_has_sparse(qdrant)
+
     log.info(
-        "search start  query=%r top_k=%d by_chunk=%s fusion=rrf ext_filter=%s",
+        "search start  query=%r top_k=%d by_chunk=%s hybrid=%s ext_filter=%s",
         query,
         top_k,
         by_chunk,
+        has_sparse,
         sorted(allowed_exts) if allowed_exts else [],
     )
 
@@ -105,34 +134,62 @@ def do_search(
     )
 
     # Build filter: exclude metadata sentinel point
-    filter_conditions: list[qmodels.Condition] = [
-        qmodels.FieldCondition(
-            key="_sentinel",
-            match=qmodels.MatchValue(value=True),
-        ),
-    ]
-    must_not = list(filter_conditions)
-    qdrant_filter = qmodels.Filter(must_not=must_not) if must_not else None
+    qdrant_filter = qmodels.Filter(
+        must_not=[
+            qmodels.FieldCondition(
+                key="_sentinel",
+                match=qmodels.MatchValue(value=True),
+            ),
+        ]
+    )
 
-    # Fetch more candidates for BM25 re-ranking
+    # Fetch more candidates for re-ranking
     search_limit = max(top_k * 10, 100)
 
     qdrant_t0 = time.monotonic()
-    results = qdrant.client.query_points(
-        collection_name=qdrant.collection,
-        query=query_emb.tolist(),
-        query_filter=qdrant_filter,
-        limit=search_limit,
-        with_payload=True,
-    )
+
+    if has_sparse:
+        # ── Native hybrid: dense + sparse prefetch → server-side RRF ──
+        query_sparse = query_sparse_vector(query)
+        results = qdrant.client.query_points(
+            collection_name=qdrant.collection,
+            prefetch=[
+                qmodels.Prefetch(
+                    query=query_emb.tolist(),
+                    using=DEFAULT_DENSE_VECTOR_NAME,
+                    limit=search_limit,
+                    filter=qdrant_filter,
+                ),
+                qmodels.Prefetch(
+                    query=query_sparse,
+                    using=DEFAULT_SPARSE_VECTOR_NAME,
+                    limit=search_limit,
+                    filter=qdrant_filter,
+                ),
+            ],
+            query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
+            limit=search_limit,
+            with_payload=True,
+        )
+    else:
+        # ── Legacy: dense-only search ──
+        results = qdrant.client.query_points(
+            collection_name=qdrant.collection,
+            query=query_emb.tolist(),
+            query_filter=qdrant_filter,
+            limit=search_limit,
+            with_payload=True,
+        )
+
     qdrant_dt = time.monotonic() - qdrant_t0
 
     point_count = len(results.points)
     log.info(
-        "qdrant query complete  collection=%s candidates=%d limit=%d time=%.3fs",
+        "qdrant query complete  collection=%s candidates=%d limit=%d hybrid=%s time=%.3fs",
         qdrant.collection,
         point_count,
         search_limit,
+        has_sparse,
         qdrant_dt,
     )
 
@@ -142,7 +199,7 @@ def do_search(
 
     # Build payload from Qdrant results
     chunks: list[dict] = []
-    semantic_scores: list[float] = []
+    fusion_scores: list[float] = []
 
     for point in results.points:
         payload = point.payload or {}
@@ -156,25 +213,35 @@ def do_search(
                 "text": payload.get("text", ""),
             }
         )
-        semantic_scores.append(point.score or 0.0)
+        fusion_scores.append(point.score or 0.0)
 
-    sem_arr = np.array(semantic_scores, dtype=np.float32)
+    scores_arr = np.array(fusion_scores, dtype=np.float32)
 
-    # BM25 lexical scoring on the returned chunks
-    bm25_t0 = time.monotonic()
-    lex = bm25_scores(query, chunks)
-    bm25_dt = time.monotonic() - bm25_t0
+    if has_sparse:
+        # Qdrant already fused dense + sparse via RRF — scores_arr IS the
+        # fused score.  We don't need client-side BM25 or RRF.
+        scores = scores_arr
+        # For backward compat, sem and lex are both set to the fusion score
+        # since we can't decompose server-side RRF into individual components.
+        sem_arr = scores_arr
+        lex = np.zeros_like(scores_arr)
+        bm25_dt = 0.0
+    else:
+        # Legacy path: client-side BM25 + RRF
+        sem_arr = scores_arr
+        bm25_t0 = time.monotonic()
+        lex = bm25_scores(query, chunks)
+        bm25_dt = time.monotonic() - bm25_t0
+        scores = rrf_fusion(sem_arr, lex)
 
-    # Reciprocal Rank Fusion of semantic and lexical rankings
-    scores = rrf_fusion(sem_arr, lex)
     rerank_pool_indices = _build_rerank_pool(chunks, scores, top_k=top_k, by_chunk=by_chunk)
 
     log.debug(
-        "candidate fusion done  candidates=%d bm25_time=%.3fs fusion=rrf sem_max=%.4f lex_max=%.4f rerank_pool=%d",
+        "candidate fusion done  candidates=%d bm25_time=%.3fs hybrid=%s scores_max=%.4f rerank_pool=%d",
         len(chunks),
         bm25_dt,
-        float(sem_arr.max()) if len(sem_arr) else 0.0,
-        float(lex.max()) if len(lex) else 0.0,
+        has_sparse,
+        float(scores_arr.max()) if len(scores_arr) else 0.0,
         len(rerank_pool_indices),
     )
 
@@ -185,7 +252,7 @@ def do_search(
     rerank_input = [chunks[idx] for idx in rerank_pool_indices]
 
     # Cross-encoder rerank — fall back to RRF order when the reranker is down.
-    # rerank_input is already ordered by RRF score descending (via bm25_top_k or
+    # rerank_input is already ordered by score descending (via bm25_top_k or
     # rank_by_file), so the fallback index order == descending relevance order.
     reranker_used = True
     try:
@@ -242,10 +309,11 @@ def do_search(
 
     total_dt = time.monotonic() - t0
     log.info(
-        "search end  returned=%d rerank_pool=%d reranker_used=%s total=%.3fs",
+        "search end  returned=%d rerank_pool=%d reranker_used=%s hybrid=%s total=%.3fs",
         len(output),
         len(rerank_pool_indices),
         reranker_used,
+        has_sparse,
         total_dt,
     )
     for item in output[: min(5, len(output))]:

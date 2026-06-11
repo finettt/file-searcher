@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -20,22 +21,52 @@ RERANKER_KWARGS = dict(
 )
 
 
+@contextmanager
+def _legacy_search_patches(mock_points=None, embedding_dim=1536):
+    """Patch helpers for legacy (dense-only, no sparse vectors) search path.
+
+    Forces _collection_has_sparse to return False so the BM25 + client-side
+    RRF fallback path is exercised.
+    """
+    mock_qdrant = MagicMock()
+    mock_qdrant.collection_exists.return_value = True
+    mock_qdrant.count.return_value = 10 if mock_points is None else max(10, len(mock_points))
+    mock_qdrant.client.query_points.return_value = MagicMock(points=mock_points or [])
+
+    with (
+        patch("app.searcher.build_client") as mock_build,
+        patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
+        patch("app.searcher._collection_has_sparse", return_value=False),
+    ):
+        mock_client = MagicMock()
+        mock_build.return_value = mock_client
+        mock_resp = MagicMock()
+        mock_resp.data = [MagicMock(embedding=[0.1] * embedding_dim)]
+        mock_resp.data[0].index = 0
+        mock_client.embeddings.create.return_value = mock_resp
+        yield mock_qdrant
+
+
+def _make_mock_point(path="test.txt", text="hello world test content", score=0.95):
+    p = MagicMock()
+    p.score = score
+    p.payload = {
+        "path": path,
+        "abs_path": f"/tmp/{path}",
+        "chunk_id": 0,
+        "start": 0,
+        "end": 100,
+        "text": text,
+    }
+    return p
+
+
 class TestDoSearch:
     def test_returns_empty_when_no_results(self):
         """Test that search returns empty list when no results found."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 0
-        mock_qdrant.client.query_points.return_value = MagicMock(points=[])
+        from app.searcher import do_search
 
-        with (
-            patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
-        ):
-            mock_build.return_value = MagicMock()
-
-            from app.searcher import do_search
-
+        with _legacy_search_patches(mock_points=[]) as mock_qdrant:
             result = do_search(
                 mock_qdrant,
                 "test query",
@@ -47,34 +78,10 @@ class TestDoSearch:
 
     def test_returns_results_with_correct_structure(self):
         """Test that results have the expected structure including rerank field."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 10
+        from app.searcher import do_search
 
-        mock_point = MagicMock()
-        mock_point.score = 0.95
-        mock_point.payload = {
-            "path": "test.txt",
-            "abs_path": "/tmp/test.txt",
-            "chunk_id": 0,
-            "start": 0,
-            "end": 100,
-            "text": "hello world test content",
-        }
-        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
-
-        with (
-            patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
-        ):
-            mock_client = MagicMock()
-            mock_build.return_value = mock_client
-            mock_resp = MagicMock()
-            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
-            mock_client.embeddings.create.return_value = mock_resp
-
-            from app.searcher import do_search
-
+        points = [_make_mock_point()]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
             result = do_search(
                 mock_qdrant,
                 "test query",
@@ -97,38 +104,10 @@ class TestDoSearch:
 
     def test_respects_top_k(self):
         """Test that results are limited by top_k."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 100
+        from app.searcher import do_search
 
-        points = []
-        for i in range(50):
-            mock_point = MagicMock()
-            mock_point.score = 0.95 - i * 0.01
-            mock_point.payload = {
-                "path": f"test{i}.txt",
-                "abs_path": f"/tmp/test{i}.txt",
-                "chunk_id": 0,
-                "start": 0,
-                "end": 100,
-                "text": f"content {i}",
-            }
-            points.append(mock_point)
-
-        mock_qdrant.client.query_points.return_value = MagicMock(points=points)
-
-        with (
-            patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
-        ):
-            mock_client = MagicMock()
-            mock_build.return_value = mock_client
-            mock_resp = MagicMock()
-            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
-            mock_client.embeddings.create.return_value = mock_resp
-
-            from app.searcher import do_search
-
+        points = [_make_mock_point(path=f"test{i}.txt", text=f"content {i}", score=0.95 - i * 0.01) for i in range(50)]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
             result = do_search(
                 mock_qdrant,
                 "test query",
@@ -142,34 +121,10 @@ class TestDoSearch:
 
     def test_by_chunk_ranking(self):
         """Test that by_chunk=True works without errors."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 10
+        from app.searcher import do_search
 
-        mock_point = MagicMock()
-        mock_point.score = 0.95
-        mock_point.payload = {
-            "path": "test.txt",
-            "abs_path": "/tmp/test.txt",
-            "chunk_id": 0,
-            "start": 0,
-            "end": 100,
-            "text": "hello world test content",
-        }
-        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
-
-        with (
-            patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
-        ):
-            mock_client = MagicMock()
-            mock_build.return_value = mock_client
-            mock_resp = MagicMock()
-            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
-            mock_client.embeddings.create.return_value = mock_resp
-
-            from app.searcher import do_search
-
+        points = [_make_mock_point()]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
             result = do_search(
                 mock_qdrant,
                 "test query",
@@ -183,34 +138,10 @@ class TestDoSearch:
 
     def test_ext_filter(self):
         """Test that ext_filter filters results by extension."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 10
+        from app.searcher import do_search
 
-        mock_point = MagicMock()
-        mock_point.score = 0.95
-        mock_point.payload = {
-            "path": "test.pdf",
-            "abs_path": "/tmp/test.pdf",
-            "chunk_id": 0,
-            "start": 0,
-            "end": 100,
-            "text": "pdf content",
-        }
-        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
-
-        with (
-            patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
-        ):
-            mock_client = MagicMock()
-            mock_build.return_value = mock_client
-            mock_resp = MagicMock()
-            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
-            mock_client.embeddings.create.return_value = mock_resp
-
-            from app.searcher import do_search
-
+        points = [_make_mock_point(path="test.pdf", text="pdf content")]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
             result = do_search(
                 mock_qdrant,
                 "test query",
@@ -224,21 +155,7 @@ class TestDoSearch:
 
     def test_reranker_called_with_correct_args(self):
         """Test that rerank_chunks is called with query and pool of chunks."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 10
-
-        mock_point = MagicMock()
-        mock_point.score = 0.95
-        mock_point.payload = {
-            "path": "doc.txt",
-            "abs_path": "/tmp/doc.txt",
-            "chunk_id": 0,
-            "start": 0,
-            "end": 100,
-            "text": "important document content",
-        }
-        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
+        from app.searcher import do_search
 
         captured_calls = []
 
@@ -246,26 +163,17 @@ class TestDoSearch:
             captured_calls.append({"query": query, "chunks": chunks, "base_url": base_url, "model": model})
             return _mock_rerank(query, chunks, base_url=base_url, model=model, top_n=top_n)
 
-        with (
-            patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=capturing_rerank),
-        ):
-            mock_client = MagicMock()
-            mock_build.return_value = mock_client
-            mock_resp = MagicMock()
-            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
-            mock_client.embeddings.create.return_value = mock_resp
-
-            from app.searcher import do_search
-
-            do_search(
-                mock_qdrant,
-                "my search query",
-                model="test-model",
-                api_key="test-key",
-                reranker_base_url="http://localhost:8004/v1",
-                reranker_model="Qwen3-Reranker-0.6B",
-            )
+        points = [_make_mock_point(path="doc.txt", text="important document content")]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
+            with patch("app.searcher.rerank_chunks", side_effect=capturing_rerank):
+                do_search(
+                    mock_qdrant,
+                    "my search query",
+                    model="test-model",
+                    api_key="test-key",
+                    reranker_base_url="http://localhost:8004/v1",
+                    reranker_model="Qwen3-Reranker-0.6B",
+                )
 
         assert len(captured_calls) == 1
         call = captured_calls[0]
@@ -276,46 +184,23 @@ class TestDoSearch:
 
     def test_score_is_rrf_and_rerank_is_crossencoder(self):
         """Test that 'score' contains RRF and 'rerank' contains cross-encoder score."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 10
-
-        mock_point = MagicMock()
-        mock_point.score = 0.95
-        mock_point.payload = {
-            "path": "test.txt",
-            "abs_path": "/tmp/test.txt",
-            "chunk_id": 0,
-            "start": 0,
-            "end": 100,
-            "text": "some text",
-        }
-        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
+        from app.searcher import do_search
 
         fixed_rerank_score = 0.8765
 
         def fixed_rerank(query, chunks, *, base_url, model, top_n=None):
             return [(0, fixed_rerank_score)]
 
-        with (
-            patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=fixed_rerank),
-        ):
-            mock_client = MagicMock()
-            mock_build.return_value = mock_client
-            mock_resp = MagicMock()
-            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
-            mock_client.embeddings.create.return_value = mock_resp
-
-            from app.searcher import do_search
-
-            result = do_search(
-                mock_qdrant,
-                "test query",
-                model="test-model",
-                api_key="test-key",
-                **RERANKER_KWARGS,
-            )
+        points = [_make_mock_point(text="some text")]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
+            with patch("app.searcher.rerank_chunks", side_effect=fixed_rerank):
+                result = do_search(
+                    mock_qdrant,
+                    "test query",
+                    model="test-model",
+                    api_key="test-key",
+                    **RERANKER_KWARGS,
+                )
 
         assert len(result) == 1
         # rerank = cross-encoder score
@@ -326,44 +211,21 @@ class TestDoSearch:
 
     def test_fallback_to_rrf_when_reranker_unavailable(self):
         """Test that search falls back to RRF ordering when reranker is down."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 10
-
-        mock_point = MagicMock()
-        mock_point.score = 0.95
-        mock_point.payload = {
-            "path": "test.txt",
-            "abs_path": "/tmp/test.txt",
-            "chunk_id": 0,
-            "start": 0,
-            "end": 100,
-            "text": "test content for fallback",
-        }
-        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
+        from app.searcher import do_search
 
         def failing_rerank(query, chunks, *, base_url, model, top_n=None):
             raise httpx.ConnectError("Connection refused")
 
-        with (
-            patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=failing_rerank),
-        ):
-            mock_client = MagicMock()
-            mock_build.return_value = mock_client
-            mock_resp = MagicMock()
-            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
-            mock_client.embeddings.create.return_value = mock_resp
-
-            from app.searcher import do_search
-
-            result = do_search(
-                mock_qdrant,
-                "test query",
-                model="test-model",
-                api_key="test-key",
-                **RERANKER_KWARGS,
-            )
+        points = [_make_mock_point(text="test content for fallback")]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
+            with patch("app.searcher.rerank_chunks", side_effect=failing_rerank):
+                result = do_search(
+                    mock_qdrant,
+                    "test query",
+                    model="test-model",
+                    api_key="test-key",
+                    **RERANKER_KWARGS,
+                )
 
         # Should still return results (via RRF fallback)
         assert len(result) == 1
@@ -377,21 +239,7 @@ class TestDoSearch:
 
     def test_no_top_n_passed_to_reranker(self):
         """Verify reranker receives no top_n so ext_filter doesn't lose results."""
-        mock_qdrant = MagicMock()
-        mock_qdrant.collection_exists.return_value = True
-        mock_qdrant.count.return_value = 10
-
-        mock_point = MagicMock()
-        mock_point.score = 0.95
-        mock_point.payload = {
-            "path": "test.txt",
-            "abs_path": "/tmp/test.txt",
-            "chunk_id": 0,
-            "start": 0,
-            "end": 100,
-            "text": "some text",
-        }
-        mock_qdrant.client.query_points.return_value = MagicMock(points=[mock_point])
+        from app.searcher import do_search
 
         captured_kwargs = []
 
@@ -399,27 +247,182 @@ class TestDoSearch:
             captured_kwargs.append({"top_n": top_n})
             return _mock_rerank(query, chunks, base_url=base_url, model=model, top_n=top_n)
 
+        points = [_make_mock_point(text="some text")]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
+            with patch("app.searcher.rerank_chunks", side_effect=capturing_rerank):
+                do_search(
+                    mock_qdrant,
+                    "query",
+                    model="test-model",
+                    api_key="test-key",
+                    top_k=3,
+                    **RERANKER_KWARGS,
+                )
+
+        assert len(captured_kwargs) == 1
+        # top_n should NOT be passed (None) so all pool results come back
+        assert captured_kwargs[0]["top_n"] is None
+
+
+class TestNativeHybridSearch:
+    """Tests for the native Qdrant hybrid search path (sparse vectors present)."""
+
+    def test_hybrid_search_uses_prefetch(self):
+        """Verify that query_points is called with prefetch when sparse vectors exist."""
+        from app.searcher import do_search
+        from qdrant_client.http import models as qmodels
+
+        points = [_make_mock_point()]
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = True
+        mock_qdrant.count.return_value = 10
+        mock_qdrant.client.query_points.return_value = MagicMock(points=points)
+
         with (
             patch("app.searcher.build_client") as mock_build,
-            patch("app.searcher.rerank_chunks", side_effect=capturing_rerank),
+            patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
+            patch("app.searcher._collection_has_sparse", return_value=True),
         ):
             mock_client = MagicMock()
             mock_build.return_value = mock_client
             mock_resp = MagicMock()
             mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
+            mock_resp.data[0].index = 0
             mock_client.embeddings.create.return_value = mock_resp
-
-            from app.searcher import do_search
 
             do_search(
                 mock_qdrant,
-                "query",
+                "test query",
                 model="test-model",
                 api_key="test-key",
-                top_k=3,
                 **RERANKER_KWARGS,
             )
 
-        assert len(captured_kwargs) == 1
-        # top_n should NOT be passed (None) so all pool results come back
-        assert captured_kwargs[0]["top_n"] is None
+        call_kwargs = mock_qdrant.client.query_points.call_args[1]
+        # In hybrid mode, prefetch should be used
+        assert "prefetch" in call_kwargs
+        assert call_kwargs["prefetch"] is not None
+        assert len(call_kwargs["prefetch"]) == 2
+        # The top-level query should be a FusionQuery with RRF
+        assert isinstance(call_kwargs["query"], qmodels.FusionQuery)
+        assert call_kwargs["query"].fusion == qmodels.Fusion.RRF
+
+    def test_hybrid_search_returns_correct_structure(self):
+        """Hybrid path results have same structure as legacy path."""
+        from app.searcher import do_search
+
+        points = [_make_mock_point()]
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = True
+        mock_qdrant.count.return_value = 10
+        mock_qdrant.client.query_points.return_value = MagicMock(points=points)
+
+        with (
+            patch("app.searcher.build_client") as mock_build,
+            patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
+            patch("app.searcher._collection_has_sparse", return_value=True),
+        ):
+            mock_client = MagicMock()
+            mock_build.return_value = mock_client
+            mock_resp = MagicMock()
+            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
+            mock_resp.data[0].index = 0
+            mock_client.embeddings.create.return_value = mock_resp
+
+            result = do_search(
+                mock_qdrant,
+                "test query",
+                model="test-model",
+                api_key="test-key",
+                **RERANKER_KWARGS,
+            )
+
+        assert len(result) >= 1
+        item = result[0]
+        for key in ("rank", "path", "score", "sem", "lex", "rerank", "chunk_id", "snippet"):
+            assert key in item
+
+    def test_hybrid_search_prefetch_uses_correct_vector_names(self):
+        """Dense leg uses 'text' and sparse leg uses 'text-sparse'."""
+        from app.searcher import do_search
+
+        from app.config import DEFAULT_DENSE_VECTOR_NAME, DEFAULT_SPARSE_VECTOR_NAME
+
+        points = [_make_mock_point()]
+        mock_qdrant = MagicMock()
+        mock_qdrant.collection_exists.return_value = True
+        mock_qdrant.count.return_value = 10
+        mock_qdrant.client.query_points.return_value = MagicMock(points=points)
+
+        with (
+            patch("app.searcher.build_client") as mock_build,
+            patch("app.searcher.rerank_chunks", side_effect=_mock_rerank),
+            patch("app.searcher._collection_has_sparse", return_value=True),
+        ):
+            mock_client = MagicMock()
+            mock_build.return_value = mock_client
+            mock_resp = MagicMock()
+            mock_resp.data = [MagicMock(embedding=[0.1] * 1536)]
+            mock_resp.data[0].index = 0
+            mock_client.embeddings.create.return_value = mock_resp
+
+            do_search(
+                mock_qdrant,
+                "test query",
+                model="test-model",
+                api_key="test-key",
+                **RERANKER_KWARGS,
+            )
+
+        prefetch = mock_qdrant.client.query_points.call_args[1]["prefetch"]
+        vector_names = {p.using for p in prefetch}
+        assert DEFAULT_DENSE_VECTOR_NAME in vector_names
+        assert DEFAULT_SPARSE_VECTOR_NAME in vector_names
+
+    def test_legacy_path_does_not_use_prefetch(self):
+        """When no sparse vectors exist, query_points is called without prefetch."""
+        from app.searcher import do_search
+
+        points = [_make_mock_point()]
+        with _legacy_search_patches(mock_points=points) as mock_qdrant:
+            do_search(
+                mock_qdrant,
+                "test query",
+                model="test-model",
+                api_key="test-key",
+                **RERANKER_KWARGS,
+            )
+
+        call_kwargs = mock_qdrant.client.query_points.call_args[1]
+        assert "prefetch" not in call_kwargs or call_kwargs.get("prefetch") is None
+
+    def test_collection_has_sparse_returns_false_on_error(self):
+        """_collection_has_sparse returns False when get_collection raises."""
+        from app.searcher import _collection_has_sparse
+
+        mock_qdrant = MagicMock()
+        mock_qdrant.client.get_collection.side_effect = Exception("connection error")
+        assert _collection_has_sparse(mock_qdrant) is False
+
+    def test_collection_has_sparse_returns_false_for_dense_only(self):
+        """_collection_has_sparse returns False for dense-only collection."""
+        from app.searcher import _collection_has_sparse
+        from app.config import DEFAULT_SPARSE_VECTOR_NAME
+
+        mock_qdrant = MagicMock()
+        # Simulate a dense-only collection with no sparse_vectors attribute
+        mock_info = MagicMock()
+        mock_info.config.params.sparse_vectors = {}
+        mock_qdrant.client.get_collection.return_value = mock_info
+        assert _collection_has_sparse(mock_qdrant) is False
+
+    def test_collection_has_sparse_returns_true_when_sparse_present(self):
+        """_collection_has_sparse returns True when sparse vector name is in config."""
+        from app.searcher import _collection_has_sparse
+        from app.config import DEFAULT_SPARSE_VECTOR_NAME
+
+        mock_qdrant = MagicMock()
+        mock_info = MagicMock()
+        mock_info.config.params.sparse_vectors = {DEFAULT_SPARSE_VECTOR_NAME: MagicMock()}
+        mock_qdrant.client.get_collection.return_value = mock_info
+        assert _collection_has_sparse(mock_qdrant) is True

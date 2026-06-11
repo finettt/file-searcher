@@ -34,6 +34,9 @@ DEFAULT_PORT = 8000
 
 DEFAULT_QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 DEFAULT_QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "file_searcher")
+DEFAULT_DENSE_VECTOR_NAME = os.getenv("QDRANT_DENSE_VECTOR_NAME", "text")
+DEFAULT_SPARSE_VECTOR_NAME = os.getenv("QDRANT_SPARSE_VECTOR_NAME", "text-sparse")
+DEFAULT_SPARSE_FILENAME_BOOST = 3.0
 
 # ── Reranker ──────────────────────────────────────────────────
 

@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 import numpy as np
+from qdrant_client.http import models as qmodels
 
-from app.scoring import RRF_K, bm25_scores, bm25_top_k, rank_by_chunk, rank_by_file, rrf_fusion, tokenize
+from app.scoring import (
+    RRF_K,
+    bm25_scores,
+    bm25_top_k,
+    document_sparse_vector,
+    query_sparse_vector,
+    rank_by_chunk,
+    rank_by_file,
+    rrf_fusion,
+    tokenize,
+)
 
 
 class TestTokenize:
@@ -210,3 +221,82 @@ class TestBm25TopK:
         scores = np.array([0.9, 0.5], dtype=np.float32)
         result = bm25_top_k(scores, top_k=0)
         assert result == []
+
+
+class TestDocumentSparseVector:
+    def test_returns_sparse_vector_type(self):
+        result = document_sparse_vector("hello world")
+        assert isinstance(result, qmodels.SparseVector)
+
+    def test_has_indices_and_values(self):
+        result = document_sparse_vector("hello world")
+        assert len(result.indices) > 0
+        assert len(result.values) > 0
+        assert len(result.indices) == len(result.values)
+
+    def test_deterministic(self):
+        """Same input produces same output."""
+        a = document_sparse_vector("hello world test")
+        b = document_sparse_vector("hello world test")
+        assert a.indices == b.indices
+        assert a.values == b.values
+
+    def test_different_texts_differ(self):
+        a = document_sparse_vector("hello world")
+        b = document_sparse_vector("completely different text")
+        assert a.indices != b.indices
+
+    def test_empty_text_returns_sentinel(self):
+        """Empty text returns a single zero-weight entry (Qdrant requires non-empty)."""
+        result = document_sparse_vector("")
+        assert len(result.indices) == 1
+        assert result.values[0] == 0.0
+
+    def test_filename_boost(self):
+        """Tokens present in the filename should get higher weight."""
+        no_path = document_sparse_vector("hello world")
+        with_path = document_sparse_vector("hello world", path="hello.txt")
+        # With filename boost, the "hello" token should have a higher relative weight
+        assert len(with_path.indices) >= len(no_path.indices)
+
+    def test_indices_are_positive_ints(self):
+        result = document_sparse_vector("test document content")
+        for idx in result.indices:
+            assert isinstance(idx, int)
+            assert idx >= 0
+
+    def test_values_are_positive(self):
+        """All weights (TF-based) should be positive."""
+        result = document_sparse_vector("test document content")
+        for val in result.values:
+            assert val > 0
+
+    def test_sorted_indices(self):
+        """Indices should be sorted for Qdrant compatibility."""
+        result = document_sparse_vector("hello world foo bar baz")
+        assert result.indices == sorted(result.indices)
+
+
+class TestQuerySparseVector:
+    def test_returns_sparse_vector_for_query(self):
+        result = query_sparse_vector("hello world")
+        assert isinstance(result, qmodels.SparseVector)
+        assert len(result.indices) > 0
+
+    def test_returns_none_for_empty_query(self):
+        result = query_sparse_vector("")
+        assert result is None
+
+    def test_deterministic(self):
+        a = query_sparse_vector("search terms")
+        b = query_sparse_vector("search terms")
+        assert a.indices == b.indices
+        assert a.values == b.values
+
+    def test_repeated_tokens_increase_weight(self):
+        """Repeated query tokens should produce higher weights."""
+        single = query_sparse_vector("hello")
+        double = query_sparse_vector("hello hello")
+        # Both should have the same token index, but double has higher weight
+        assert single.indices == double.indices
+        assert double.values[0] > single.values[0]

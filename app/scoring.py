@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
+from qdrant_client.http import models as qmodels
+
+from .config import DEFAULT_SPARSE_FILENAME_BOOST
 
 # ── Tokenization ──────────────────────────────────────────────
 
@@ -162,3 +166,108 @@ def bm25_top_k(
     actual_k = min(top_k, n)
     top_idx = np.argsort(-scores)[:actual_k]
     return [int(i) for i in top_idx]
+
+
+# ── Sparse vector generation (server-side hybrid search) ──────
+#
+# Qdrant supports native hybrid search by storing a sparse vector alongside
+# the dense embedding. We produce a hashed BM25-style sparse vector for each
+# chunk at index time, and a TF-only sparse vector for each query at search
+# time. Qdrant then fuses dense+sparse rankings server-side via
+# ``query=models.FusionQuery(fusion=models.Fusion.RRF)``.
+#
+# The vocabulary is open: we hash each token to a 32-bit non-negative integer
+# (the dimension index) — this matches Qdrant's ``SparseVector`` schema and
+# lets us add new terms without rebuilding a vocab.
+
+# Sparse vector index space is u32; reserve the top bit so hashed indices stay
+# in a safe range across platforms.
+_SPARSE_DIM = 2**31 - 1
+
+
+def _hash_token(token: str) -> int:
+    """Stable, language-independent token → non-negative int hash.
+
+    Uses Python's built-in ``hash`` is **not** stable across processes, so we
+    use a deterministic FNV-1a 32-bit hash instead.
+    """
+    h = 0x811C9DC5  # FNV offset basis
+    for b in token.encode("utf-8"):
+        h ^= b
+        h = (h * 0x01000193) & 0xFFFFFFFF  # FNV prime, keep 32-bit
+    # Fold into the safe u31 range Qdrant accepts.
+    return h % _SPARSE_DIM
+
+
+def _aggregate_sparse(
+    indices_values: dict[int, float],
+    tokens: list[str],
+    weight: float,
+) -> None:
+    """Accumulate weighted token counts into an index→value dict."""
+    if weight == 0.0 or not tokens:
+        return
+    counts = Counter(tokens)
+    for tok, n in counts.items():
+        idx = _hash_token(tok)
+        indices_values[idx] = indices_values.get(idx, 0.0) + float(n) * weight
+
+
+def document_sparse_vector(
+    text: str,
+    path: str = "",
+    *,
+    filename_boost: float = DEFAULT_SPARSE_FILENAME_BOOST,
+) -> qmodels.SparseVector:
+    """Build a hashed term-frequency sparse vector for a document chunk.
+
+    Mirrors the weighting used by :func:`bm25_scores`: filename tokens are
+    boosted ×``filename_boost`` so matches on the file name rank higher.
+    The IDF component is left to Qdrant's sparse index (which applies BM25
+    scoring at query time when used with a TF query vector).
+    """
+    indices_values: dict[int, float] = {}
+    _aggregate_sparse(indices_values, tokenize(text), weight=1.0)
+    if path:
+        _aggregate_sparse(
+            indices_values,
+            tokenize(Path(path).name),
+            weight=filename_boost,
+        )
+
+    if not indices_values:
+        # Qdrant rejects fully-empty sparse vectors; emit a single zero-weight
+        # entry so the point can still be stored and matched.
+        return qmodels.SparseVector(indices=[0], values=[0.0])
+
+    items = sorted(indices_values.items())
+    return qmodels.SparseVector(
+        indices=[idx for idx, _ in items],
+        values=[float(v) for _, v in items],
+    )
+
+
+def query_sparse_vector(query: str) -> qmodels.SparseVector | None:
+    """Build a sparse query vector (TF only — Qdrant applies sparse scoring).
+    
+    Returns ``None`` for empty/all-stopword queries so callers can skip the
+    sparse prefetch entirely and fall back to dense-only search.
+    """
+    tokens = tokenize(query)
+    if not tokens:
+        return None
+
+    counts = Counter(tokens)
+    pairs = sorted((_hash_token(tok), float(n)) for tok, n in counts.items())
+
+    # ``sorted`` may surface duplicate hashed indices for distinct tokens; merge
+    # them so Qdrant doesn't reject the vector with a duplicate-index error.
+    merged: dict[int, float] = {}
+    for idx, val in pairs:
+        merged[idx] = merged.get(idx, 0.0) + val
+    items = sorted(merged.items())
+
+    return qmodels.SparseVector(
+        indices=[idx for idx, _ in items],
+        values=[val for _, val in items],
+    )

@@ -8,7 +8,12 @@ from typing import Any
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
 
-from .config import DEFAULT_QDRANT_COLLECTION, DEFAULT_QDRANT_URL
+from .config import (
+    DEFAULT_DENSE_VECTOR_NAME,
+    DEFAULT_QDRANT_COLLECTION,
+    DEFAULT_QDRANT_URL,
+    DEFAULT_SPARSE_VECTOR_NAME,
+)
 from .logging_config import get_logger
 
 log = get_logger(__name__)
@@ -40,7 +45,11 @@ class QdrantIndex:
     # ── Collection lifecycle ──────────────────────────────────
 
     def ensure_collection(self, vector_size: int) -> bool:
-        """Create collection if it doesn't exist. Returns True if created."""
+        """Create collection if it doesn't exist. Returns True if created.
+
+        Creates a collection with named dense vector ('text') and sparse
+        vector ('text-sparse') configs for native hybrid search.
+        """
         existing = [c.name for c in self.client.get_collections().collections]
         if self.collection in existing:
             log.debug("Collection already exists: %s", self.collection)
@@ -48,10 +57,15 @@ class QdrantIndex:
         t0 = time.monotonic()
         self.client.create_collection(
             collection_name=self.collection,
-            vectors_config=qmodels.VectorParams(
-                size=vector_size,
-                distance=qmodels.Distance.COSINE,
-            ),
+            vectors_config={
+                DEFAULT_DENSE_VECTOR_NAME: qmodels.VectorParams(
+                    size=vector_size,
+                    distance=qmodels.Distance.COSINE,
+                ),
+            },
+            sparse_vectors_config={
+                DEFAULT_SPARSE_VECTOR_NAME: qmodels.SparseVectorParams(),
+            },
         )
         for field in ("path", "chunk_id"):
             self.client.create_payload_index(
@@ -62,9 +76,11 @@ class QdrantIndex:
                 else qmodels.PayloadSchemaType.INTEGER,
             )
         log.info(
-            "Collection created  name=%s vector_size=%d time=%.2fs",
+            "Collection created  name=%s vector_size=%d dense=%s sparse=%s time=%.2fs",
             self.collection,
             vector_size,
+            DEFAULT_DENSE_VECTOR_NAME,
+            DEFAULT_SPARSE_VECTOR_NAME,
             time.monotonic() - t0,
         )
         return True
@@ -114,14 +130,19 @@ class QdrantIndex:
         return {}
 
     def set_metadata(self, meta: dict[str, Any], vector_size: int) -> None:
-        """Store collection-level metadata in a sentinel point."""
+        """Store collection-level metadata in a sentinel point.
+
+        Uses named vectors to be compatible with the hybrid collection schema.
+        """
         t0 = time.monotonic()
         self.client.upsert(
             collection_name=self.collection,
             points=[
                 qmodels.PointStruct(
                     id=_META_POINT_ID,
-                    vector=[0.0] * vector_size,
+                    vector={
+                        DEFAULT_DENSE_VECTOR_NAME: [0.0] * vector_size,
+                    },
                     payload={"_meta": meta, "_sentinel": True},
                 ),
             ],

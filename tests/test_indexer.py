@@ -141,3 +141,61 @@ class TestBuildCancelled:
         )
         with pytest.raises(BuildCancelled):
             next(gen)
+
+
+class TestUpsertBatchSparseVectors:
+    """Tests for _upsert_batch with sparse vector support."""
+
+    def test_upsert_includes_sparse_vectors(self):
+        """Verify PointStruct is called with vector dict containing both dense and sparse."""
+        from app.indexer import _upsert_batch
+        from app.config import DEFAULT_DENSE_VECTOR_NAME, DEFAULT_SPARSE_VECTOR_NAME
+        from qdrant_client.http import models as qmodels
+
+        mock_qdrant = MagicMock()
+
+        chunks = [
+            {"path": "f.txt", "abs_path": "/tmp/f.txt", "chunk_id": 0, "start": 0, "end": 10, "text": "hello"},
+        ]
+        embeddings = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+        sparse = [qmodels.SparseVector(indices=[1, 5], values=[0.6, 0.8])]
+
+        _upsert_batch(mock_qdrant, chunks, embeddings, sparse_vectors=sparse)
+
+        # PointStruct is a MagicMock; inspect the kwargs it was constructed with
+        ps_calls = qmodels.PointStruct.call_args_list
+        assert len(ps_calls) >= 1
+        call_kwargs = ps_calls[-1][1]  # last call's keyword args
+
+        vector_arg = call_kwargs["vector"]
+        assert isinstance(vector_arg, dict)
+        assert DEFAULT_DENSE_VECTOR_NAME in vector_arg
+        assert DEFAULT_SPARSE_VECTOR_NAME in vector_arg
+        # Dense vector should match the embedding
+        np.testing.assert_allclose(vector_arg[DEFAULT_DENSE_VECTOR_NAME], [0.1, 0.2, 0.3], atol=1e-6)
+        # Sparse vector should be a SparseVector instance
+        assert isinstance(vector_arg[DEFAULT_SPARSE_VECTOR_NAME], qmodels.SparseVector)
+
+    def test_upsert_without_sparse_vectors(self):
+        """When sparse_vectors is None, only dense vector is stored."""
+        from app.indexer import _upsert_batch
+        from app.config import DEFAULT_DENSE_VECTOR_NAME, DEFAULT_SPARSE_VECTOR_NAME
+        from qdrant_client.http import models as qmodels
+
+        mock_qdrant = MagicMock()
+
+        chunks = [
+            {"path": "f.txt", "abs_path": "/tmp/f.txt", "chunk_id": 0, "start": 0, "end": 10, "text": "hello"},
+        ]
+        embeddings = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+
+        _upsert_batch(mock_qdrant, chunks, embeddings, sparse_vectors=None)
+
+        ps_calls = qmodels.PointStruct.call_args_list
+        assert len(ps_calls) >= 1
+        call_kwargs = ps_calls[-1][1]
+
+        vector_arg = call_kwargs["vector"]
+        assert isinstance(vector_arg, dict)
+        assert DEFAULT_DENSE_VECTOR_NAME in vector_arg
+        assert DEFAULT_SPARSE_VECTOR_NAME not in vector_arg
