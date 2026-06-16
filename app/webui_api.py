@@ -9,6 +9,7 @@ import os
 
 import httpx
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -27,6 +28,26 @@ log = get_logger(__name__)
 
 # ── Default URLs ───────────────────────────────────────────────
 DEFAULT_INDEXER_URL = os.getenv("INDEXER_URL", "http://localhost:8002")
+
+
+# ── Lifespan ──────────────────────────────────────────────────
+
+def _get_http_client(app: FastAPI) -> httpx.AsyncClient:
+    """Return the shared HTTP client, creating it lazily if needed."""
+    client = getattr(app.state, "http_client", None)
+    if client is None:
+        client = httpx.AsyncClient(base_url=app.state.indexer_url, timeout=120.0)
+        app.state.http_client = client
+    return client
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    _get_http_client(app)  # pre-warm
+    yield
+    client = getattr(app.state, "http_client", None)
+    if client is not None:
+        await client.aclose()
 
 
 # ── Helpers ───────────────────────────────────────────────────
@@ -57,20 +78,13 @@ def create_webui_app(
     indexer_url = (indexer_url or os.getenv("INDEXER_URL", DEFAULT_INDEXER_URL)).rstrip("/")
     html_template = _load_html_template("index.html")
 
-    app = FastAPI(title="File Searcher — Web UI")
+    app = FastAPI(title="File Searcher — Web UI", lifespan=_lifespan)
     app.state.indexer_url = indexer_url
     app.state.host = host
     app.state.port = port
     app.state.html_template = html_template
     app.state.hide_health = hide_health
     app.add_middleware(CORSMiddleware, allow_origins=["*"])
-
-    # Shared async HTTP client (connection-pooled, reused across requests)
-    http_client = httpx.AsyncClient(base_url=indexer_url, timeout=120.0)
-
-    @app.on_event("shutdown")
-    async def _shutdown():
-        await http_client.aclose()
 
     # ── HTML root ─────────────────────────────────────────────
 
@@ -106,6 +120,7 @@ def create_webui_app(
 
         body = await request.body()
         headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+        http_client = _get_http_client(request.app)
 
         try:
             upstream = await http_client.request(

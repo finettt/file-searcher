@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.8.0"]
+dev = ["ruff>=0.8.0", "pytest>=8.0"]
 
 [project.scripts]
 file-searcher = "main:main"
