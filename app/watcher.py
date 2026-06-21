@@ -7,7 +7,7 @@ import os
 import threading
 from pathlib import Path
 
-from watchfiles import awatch
+from watchfiles import Change, awatch
 
 from . import cache, indexer
 from .logging_config import get_logger
@@ -69,6 +69,7 @@ async def watch_directory(
             str(data_dir),
             recursive=True,
             stop_event=shutdown_event,
+            force_polling=True,  # reliable across Docker bind mounts
         ):
             added: set[str] = set()
             modified: set[str] = set()
@@ -78,11 +79,11 @@ async def watch_directory(
                 if not _relevant(path_str, exts) or _skip_dir(path_str):
                     continue
                 rel = os.path.relpath(path_str, str(data_dir)).replace(os.sep, "/")
-                if change_type == "added":
-                    added.add(rel)
-                elif change_type == "modified":
+                if change_type == Change.modified:
                     modified.add(rel)
-                elif change_type == "deleted":
+                elif change_type == Change.added:
+                    added.add(rel)
+                elif change_type == Change.deleted:
                     deleted.add(rel)
 
             if not (added or modified or deleted):
