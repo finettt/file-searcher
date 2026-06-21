@@ -23,9 +23,9 @@ class ProgressEvent:
     # Human-readable message
     message: str = ""
     # OCR stats
-    ocr_pages: int = 0          # total OCR pages processed so far
-    ocr_current_page: int = 0   # page being OCR-ed right now (1-based, 0 = not in OCR)
-    ocr_total_pages: int = 0    # total pages in the file currently being OCR-ed
+    ocr_pages: int = 0  # total OCR pages processed so far
+    ocr_current_page: int = 0  # page being OCR-ed right now (1-based, 0 = not in OCR)
+    ocr_total_pages: int = 0  # total pages in the file currently being OCR-ed
 
 
 class ProgressTracker:
@@ -40,9 +40,9 @@ class ProgressTracker:
         self._current_file: str = ""
         self._phase: str = "idle"
         # OCR counters
-        self._ocr_pages: int = 0          # cumulative OCR pages done
-        self._ocr_current_page: int = 0   # page in progress (0 when idle)
-        self._ocr_total_pages: int = 0    # total pages of current file
+        self._ocr_pages: int = 0  # cumulative OCR pages done
+        self._ocr_current_page: int = 0  # page in progress (0 when idle)
+        self._ocr_total_pages: int = 0  # total pages of current file
 
     def start(self, total_files: int) -> None:
         self._start_time = time.time()

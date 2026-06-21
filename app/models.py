@@ -60,11 +60,11 @@ class DiffResponse(BaseModel):
 class SearchResultItem(BaseModel):
     rank: int
     path: str
-    score: float         # RRF fusion score (backward compat)
+    score: float  # RRF fusion score (backward compat)
     sem: float
     lex: float
-    rerank: float = -1.0         # cross-encoder score; -1.0 means reranker was unavailable
-    reranker_used: bool = True   # False when the cross-encoder fell back to RRF ordering
+    rerank: float = -1.0  # cross-encoder score; -1.0 means reranker was unavailable
+    reranker_used: bool = True  # False when the cross-encoder fell back to RRF ordering
     chunk_id: int
     start: int
     end: int

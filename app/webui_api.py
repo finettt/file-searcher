@@ -32,6 +32,7 @@ DEFAULT_INDEXER_URL = os.getenv("INDEXER_URL", "http://localhost:8002")
 
 # ── Lifespan ──────────────────────────────────────────────────
 
+
 def _get_http_client(app: FastAPI) -> httpx.AsyncClient:
     """Return the shared HTTP client, creating it lazily if needed."""
     client = getattr(app.state, "http_client", None)

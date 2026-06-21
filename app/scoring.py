@@ -249,7 +249,7 @@ def document_sparse_vector(
 
 def query_sparse_vector(query: str) -> qmodels.SparseVector | None:
     """Build a sparse query vector (TF only — Qdrant applies sparse scoring).
-    
+
     Returns ``None`` for empty/all-stopword queries so callers can skip the
     sparse prefetch entirely and fall back to dense-only search.
     """
