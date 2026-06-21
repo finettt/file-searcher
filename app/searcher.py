@@ -148,38 +148,45 @@ def do_search(
 
     qdrant_t0 = time.monotonic()
 
-    if has_sparse:
-        # ── Native hybrid: dense + sparse prefetch → server-side RRF ──
-        query_sparse = query_sparse_vector(query)
-        results = qdrant.client.query_points(
-            collection_name=qdrant.collection,
-            prefetch=[
-                qmodels.Prefetch(
-                    query=query_emb.tolist(),
-                    using=DEFAULT_DENSE_VECTOR_NAME,
-                    limit=search_limit,
-                    filter=qdrant_filter,
-                ),
-                qmodels.Prefetch(
-                    query=query_sparse,
-                    using=DEFAULT_SPARSE_VECTOR_NAME,
-                    limit=search_limit,
-                    filter=qdrant_filter,
-                ),
-            ],
-            query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
-            limit=search_limit,
-            with_payload=True,
+    try:
+        if has_sparse:
+            # ── Native hybrid: dense + sparse prefetch → server-side RRF ──
+            query_sparse = query_sparse_vector(query)
+            results = qdrant.client.query_points(
+                collection_name=qdrant.collection,
+                prefetch=[
+                    qmodels.Prefetch(
+                        query=query_emb.tolist(),
+                        using=DEFAULT_DENSE_VECTOR_NAME,
+                        limit=search_limit,
+                        filter=qdrant_filter,
+                    ),
+                    qmodels.Prefetch(
+                        query=query_sparse,
+                        using=DEFAULT_SPARSE_VECTOR_NAME,
+                        limit=search_limit,
+                        filter=qdrant_filter,
+                    ),
+                ],
+                query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
+                limit=search_limit,
+                with_payload=True,
+            )
+        else:
+            # ── Legacy: dense-only search ──
+            results = qdrant.client.query_points(
+                collection_name=qdrant.collection,
+                query=query_emb.tolist(),
+                query_filter=qdrant_filter,
+                limit=search_limit,
+                with_payload=True,
+            )
+    except Exception as exc:
+        log.warning(
+            "Qdrant search query failed, falling back to empty results: %s",
+            exc,
         )
-    else:
-        # ── Legacy: dense-only search ──
-        results = qdrant.client.query_points(
-            collection_name=qdrant.collection,
-            query=query_emb.tolist(),
-            query_filter=qdrant_filter,
-            limit=search_limit,
-            with_payload=True,
-        )
+        return []
 
     qdrant_dt = time.monotonic() - qdrant_t0
 
@@ -289,11 +296,11 @@ def do_search(
             {
                 "rank": len(output) + 1,
                 "path": item["path"],
-                "score": rrf_score,                           # RRF fusion — backward compat
+                "score": rrf_score,  # RRF fusion — backward compat
                 "sem": round(float(sem_arr[original_idx]), 4),
                 "lex": round(float(lex[original_idx]), 2),
-                "rerank": round(float(rerank_score), 4),      # cross-encoder score (-1.0 on fallback)
-                "reranker_used": reranker_used,               # consumers can distinguish fallback
+                "rerank": round(float(rerank_score), 4),  # cross-encoder score (-1.0 on fallback)
+                "reranker_used": reranker_used,  # consumers can distinguish fallback
                 "chunk_id": item["chunk_id"],
                 "start": item["start"],
                 "end": item["end"],

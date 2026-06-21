@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qmodels
@@ -22,6 +23,49 @@ log = get_logger(__name__)
 _META_POINT_ID = "00000000-0000-0000-0000-000000000000"
 
 
+@dataclass
+class CircuitBreaker:
+    """Simple circuit breaker for external service calls.
+
+    Tracks consecutive failures. After ``threshold`` consecutive failures,
+    the circuit trips OPEN and stays open for ``recovery_timeout`` seconds.
+    A single success resets the failure count.
+    """
+
+    name: str
+    threshold: int = 5
+    recovery_timeout: float = 30.0
+    _failures: int = 0
+    _last_failure_time: float = 0.0
+    _state: str = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+
+    @property
+    def is_open(self) -> bool:
+        if self._state == "CLOSED":
+            return False
+        if self._state == "OPEN":
+            # Check if recovery timeout has passed
+            if time.monotonic() - self._last_failure_time >= self.recovery_timeout:
+                self._state = "HALF_OPEN"
+                return False
+            return True
+        # HALF_OPEN - allow one request through
+        return False
+
+    def record_success(self) -> None:
+        self._failures = 0
+        self._state = "CLOSED"
+
+    def record_failure(self) -> None:
+        self._failures += 1
+        self._last_failure_time = time.monotonic()
+        if self._failures >= self.threshold:
+            self._state = "OPEN"
+
+    def __str__(self) -> str:
+        return f"CircuitBreaker({self.name}: {self._state}, failures={self._failures})"
+
+
 class QdrantIndex:
     """Thin wrapper around QdrantClient for index operations."""
 
@@ -33,6 +77,7 @@ class QdrantIndex:
         self.url = url
         self.collection = collection
         self._client: QdrantClient | None = None
+        self._circuit_breaker = CircuitBreaker(name=f"qdrant:{self.collection}")
 
     @property
     def client(self) -> QdrantClient:
@@ -42,6 +87,63 @@ class QdrantIndex:
             log.info("Qdrant connected  url=%s collection=%s", self.url, self.collection)
         return self._client
 
+    @property
+    def circuit_breaker(self) -> CircuitBreaker:
+        return self._circuit_breaker
+
+    def _call_with_retry(
+        self,
+        operation: str,
+        fn: Callable[..., Any],
+        *args: Any,
+        max_retries: int = 2,
+        **kwargs: Any,
+    ) -> Any:
+        """Call *fn* with retry and circuit breaker protection.
+
+        Args:
+            operation: Human-readable name for logging (e.g. "query_points").
+            fn: The Qdrant client method to call.
+            *args, **kwargs: Passed to fn.
+
+        Returns:
+            The return value of fn.
+
+        Raises:
+            The last exception if all retries fail and circuit breaker trips.
+        """
+        if self._circuit_breaker.is_open:
+            log.warning(
+                "Circuit breaker OPEN for %s/%s — skipping %s",
+                self.collection,
+                operation,
+                self._circuit_breaker,
+            )
+            raise ConnectionError(f"Circuit breaker OPEN for {operation} on {self.collection}")
+
+        last_exc = None
+        for attempt in range(1 + max_retries):
+            try:
+                result = fn(*args, **kwargs)
+                self._circuit_breaker.record_success()
+                return result
+            except Exception as exc:
+                last_exc = exc
+                log.warning(
+                    "%s attempt %d/%d failed: %s",
+                    operation,
+                    attempt + 1,
+                    1 + max_retries,
+                    exc,
+                )
+                if attempt < max_retries:
+                    # Exponential backoff: 0.5s, 1s, 2s...
+                    delay = 0.5 * (2**attempt)
+                    time.sleep(delay)
+
+        self._circuit_breaker.record_failure()
+        raise last_exc  # type: ignore[misc]
+
     # ── Collection lifecycle ──────────────────────────────────
 
     def ensure_collection(self, vector_size: int) -> bool:
@@ -50,7 +152,7 @@ class QdrantIndex:
         Creates a collection with named dense vector ('text') and sparse
         vector ('text-sparse') configs for native hybrid search.
         """
-        existing = [c.name for c in self.client.get_collections().collections]
+        existing = [c.name for c in self._call_with_retry("get_collections", self.client.get_collections).collections]
         if self.collection in existing:
             log.debug("Collection already exists: %s", self.collection)
             return False
@@ -87,14 +189,19 @@ class QdrantIndex:
 
     def recreate_collection(self, vector_size: int) -> None:
         """Drop and recreate collection (full rebuild)."""
-        existing = [c.name for c in self.client.get_collections().collections]
+        existing = [c.name for c in self._call_with_retry("get_collections", self.client.get_collections).collections]
         if self.collection in existing:
             log.info("Dropping collection: %s", self.collection)
-            self.client.delete_collection(self.collection)
+            self._call_with_retry("delete_collection", self.client.delete_collection, self.collection)
         self.ensure_collection(vector_size)
 
     def collection_exists(self) -> bool:
-        existing = [c.name for c in self.client.get_collections().collections]
+        try:
+            existing = [
+                c.name for c in self._call_with_retry("get_collections", self.client.get_collections).collections
+            ]
+        except Exception:
+            return False
         exists = self.collection in existing
         log.debug("collection_exists(%s) → %s", self.collection, exists)
         return exists
@@ -105,7 +212,7 @@ class QdrantIndex:
         """Return number of points (chunks) in the collection."""
         if not self.collection_exists():
             return 0
-        info = self.client.get_collection(self.collection)
+        info = self._call_with_retry("get_collection", self.client.get_collection, self.collection)
         n = info.points_count or 0
         log.debug("collection count(%s) → %d", self.collection, n)
         return n
@@ -117,7 +224,9 @@ class QdrantIndex:
         if not self.collection_exists():
             return {}
         try:
-            points = self.client.retrieve(
+            points = self._call_with_retry(
+                "retrieve",
+                self.client.retrieve,
                 collection_name=self.collection,
                 ids=[_META_POINT_ID],
                 with_payload=True,
@@ -135,7 +244,9 @@ class QdrantIndex:
         Uses named vectors to be compatible with the hybrid collection schema.
         """
         t0 = time.monotonic()
-        self.client.upsert(
+        self._call_with_retry(
+            "upsert",
+            self.client.upsert,
             collection_name=self.collection,
             points=[
                 qmodels.PointStruct(
@@ -158,7 +269,9 @@ class QdrantIndex:
         log.info("Deleting points for %d paths", len(paths))
         for p in paths:
             log.debug("  delete path: %s", p)
-        self.client.delete(
+        self._call_with_retry(
+            "delete",
+            self.client.delete,
             collection_name=self.collection,
             points_selector=qmodels.FilterSelector(
                 filter=qmodels.Filter(
@@ -182,7 +295,9 @@ class QdrantIndex:
         ids_to_delete: list[str] = []
         offset = None
         while True:
-            result = self.client.scroll(
+            result = self._call_with_retry(
+                "scroll",
+                self.client.scroll,
                 collection_name=self.collection,
                 scroll_filter=None,
                 limit=1000,
@@ -201,7 +316,9 @@ class QdrantIndex:
 
         log.info("Deleting %d points matching prefix(es)", len(ids_to_delete))
         if ids_to_delete:
-            self.client.delete(
+            self._call_with_retry(
+                "delete",
+                self.client.delete,
                 collection_name=self.collection,
                 points_selector=qmodels.PointsSelector(
                     points=ids_to_delete,
@@ -220,7 +337,9 @@ class QdrantIndex:
         paths: set[str] = set()
         offset = None
         while True:
-            result = self.client.scroll(
+            result = self._call_with_retry(
+                "scroll",
+                self.client.scroll,
                 collection_name=self.collection,
                 scroll_filter=qmodels.Filter(
                     must_not=[
@@ -249,7 +368,10 @@ class QdrantIndex:
         """Return collection info dict for /api/status."""
         if not self.collection_exists():
             return {}
-        info = self.client.get_collection(self.collection)
+        try:
+            info = self._call_with_retry("get_collection", self.client.get_collection, self.collection)
+        except Exception:
+            return {}
         meta = self.get_metadata()
         return {
             "points_count": info.points_count or 0,

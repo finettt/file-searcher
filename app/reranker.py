@@ -6,9 +6,12 @@ import time
 
 import httpx
 
+from .cache import CircuitBreaker
 from .logging_config import get_logger
 
 log = get_logger(__name__)
+
+_RERANKER_CB = CircuitBreaker(name="reranker", threshold=3, recovery_timeout=60.0)
 
 # Qwen3-Reranker prepends an instruction prompt of ~100 tokens to every
 # document.  At ~3 chars/token, 1800 chars ≈ 600 doc-tokens; adding the
@@ -60,6 +63,11 @@ def rerank(
 
     url = base_url.rstrip("/") + "/rerank"
 
+    # Check circuit breaker before making the call
+    if _RERANKER_CB.is_open:
+        log.warning("Reranker circuit breaker OPEN — raising")
+        raise httpx.HTTPError("Reranker circuit breaker is OPEN")
+
     log.info(
         "reranker start  url=%s model=%s docs=%d top_n=%s",
         url,
@@ -69,9 +77,14 @@ def rerank(
     )
 
     t0 = time.monotonic()
-    with httpx.Client(timeout=60.0) as client:
-        resp = client.post(url, json=payload)
-        resp.raise_for_status()
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.post(url, json=payload)
+            resp.raise_for_status()
+    except Exception:
+        _RERANKER_CB.record_failure()
+        raise
+    _RERANKER_CB.record_success()
 
     dt = time.monotonic() - t0
     data = resp.json()
@@ -80,10 +93,7 @@ def rerank(
     # {"results": [{"index": 0, "relevance_score": 0.92}, ...]}
     results_raw = data.get("results", [])
 
-    ranked: list[tuple[int, float]] = [
-        (int(item["index"]), float(item["relevance_score"]))
-        for item in results_raw
-    ]
+    ranked: list[tuple[int, float]] = [(int(item["index"]), float(item["relevance_score"])) for item in results_raw]
     # Sort descending by score (server may already sort, but be safe)
     ranked.sort(key=lambda x: x[1], reverse=True)
 
