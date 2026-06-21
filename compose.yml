@@ -32,6 +32,8 @@ services:
               capabilities: [gpu]
               device_ids:
                 - nvidia.com/gpu=all
+        limits:
+          memory: 8G
     volumes:
       - ./models:/models
     command: >
@@ -63,13 +65,12 @@ services:
               capabilities: [gpu]
               device_ids:
                 - nvidia.com/gpu=all
+        limits:
+          memory: 8G
     volumes:
       - ./models:/models
     command: ["--host", "0.0.0.0", "--port", "8000", "-m", "/models/nomic-embed.gguf", "-ngl", "99", "--embedding", "--alias", "${EMBEDDING_MODEL}", "--ubatch-size", "2048", "--batch-size", "2048", "-np", "1"]
     restart: unless-stopped
-    depends_on:
-      llamacpp-ocr:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 5s
@@ -91,9 +92,6 @@ services:
     environment:
       - FB_NOAUTH=true
     restart: unless-stopped
-    depends_on:
-      llamacpp:
-        condition: service_healthy
 
   # 3a. Cross-encoder reranker (GPU, Qwen3-Reranker-0.6B)
   llamacpp-reranker:
@@ -110,6 +108,8 @@ services:
               capabilities: [gpu]
               device_ids:
                 - nvidia.com/gpu=all
+        limits:
+          memory: 8G
     volumes:
       - ./models:/models
     command: >
@@ -148,6 +148,10 @@ services:
     volumes:
       - ${DATA_DIR}:/data:ro
     command: ["main_indexer.py", "/data", "--port", "8002", "--filebrowser-url", "${FILEBROWSER_URL:-http://filebrowser:80}"]
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     restart: unless-stopped
     depends_on:
       llamacpp:
@@ -160,8 +164,9 @@ services:
       test: ["CMD", "curl", "-f", "http://localhost:8002/api/health"]
       interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 15s
+      retries: 20
+      start_period: 30s
+    stop_grace_period: 120s
 
   # 5. Web UI gateway (serves HTML, proxies API calls to indexer)
   webui:
@@ -175,6 +180,10 @@ services:
       - INDEXER_URL=http://indexer:8002
       - HIDE_HEALTH=${HIDE_HEALTH:-false}
     command: ["main_webui.py", "--port", "8001", "--indexer-url", "http://indexer:8002"]
+    deploy:
+      resources:
+        limits:
+          memory: 1G
     restart: unless-stopped
     depends_on:
       indexer:
