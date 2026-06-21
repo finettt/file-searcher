@@ -372,6 +372,51 @@ select.sel:focus{border-color:var(--border-hover)}
 }
 .toast.show{transform:translateX(-50%) translateY(0)}
 
+/* ── Index status ─────────────────────── */
+.idx-status{
+  text-align:center;padding:4rem 2rem;display:none;
+}
+.idx-status.active{display:block;animation:fadeUp .2s var(--ease)}
+
+.idx-status .spinner{
+  width:32px;height:32px;margin:0 auto 1.25rem;
+  border:2px solid var(--bg3);border-top-color:var(--tx);
+  border-radius:50%;animation:sp .6s linear infinite;
+}
+
+.idx-status h2{font-size:1.1rem;font-weight:500;color:var(--tx);margin-bottom:.3rem}
+.idx-status p{font-size:.82rem;color:var(--tx2);margin-bottom:.25rem}
+.idx-status .sub{font-size:.7rem;color:var(--tx3);font-family:var(--mono);margin-bottom:1.5rem}
+.idx-status .sub strong{color:var(--tx1);font-weight:500}
+
+.idx-status .progress-line{
+  max-width:320px;margin:1.25rem auto 0;
+  height:3px;background:var(--bg3);border-radius:2px;overflow:hidden;
+}
+.idx-status .progress-line .fill{
+  height:100%;background:var(--tx2);border-radius:2px;
+  width:0%;transition:width .4s var(--ease);
+}
+
+.idx-status .p-stats{
+  display:flex;justify-content:center;gap:1rem;margin-top:.75rem;
+  font-size:.65rem;color:var(--tx3);font-family:var(--mono);
+}
+.idx-status .p-stats span{display:flex;align-items:center;gap:.25rem}
+
+.idx-empty-state{
+  text-align:center;padding:4rem 2rem;
+}
+.idx-empty-state h3{color:var(--tx2);font-size:.9rem;font-weight:500;margin-bottom:.25rem}
+.idx-empty-state p{font-size:.8rem;color:var(--tx3);margin-bottom:.75rem}
+.idx-empty-state .btn{
+  font-size:.75rem;padding:.45rem 1rem;border-radius:6px;
+  background:var(--tx);color:var(--bg);border:none;font-weight:500;
+  cursor:pointer;transition:opacity .15s;font-family:var(--sans);
+}
+.idx-empty-state .btn:hover{opacity:.85}
+.idx-empty-state .btn:disabled{opacity:.35;cursor:not-allowed}
+
 /* ── Empty ──────────────────────────── */
 .empty{text-align:center;padding:4rem 2rem;color:var(--tx3)}
 .empty h3{color:var(--tx2);font-size:.9rem;font-weight:500;margin-bottom:.25rem}
@@ -447,6 +492,34 @@ select.sel:focus{border-color:var(--border-hover)}
         <h3>No query yet</h3>
         <p>Type something and press Enter</p>
       </div>
+    </div>
+  </div>
+
+  <!-- Index status overlay (shown when no index or building) -->
+  <div class="page" id="pg-idx-status">
+    <div class="idx-status" id="idxBuilding">
+      <div class="spinner"></div>
+      <h2>Building index&hellip;</h2>
+      <p id="idxPhase">Scanning files</p>
+      <div class="sub" id="idxSub">Preparing to index your documents</div>
+      <div class="progress-line"><div class="fill" id="idxFill"></div></div>
+      <div class="p-stats">
+        <span id="idxFiles">0 / 0 files</span>
+        <span id="idxChunks">0 chunks</span>
+        <span class="sub" id="idxEta"></span>
+      </div>
+    </div>
+
+    <div class="idx-empty-state" id="idxEmpty" style="display:none">
+      <h3>No index yet</h3>
+      <p>Your document collection hasn&apos;t been indexed for search.</p>
+      <button class="btn" id="idxStartBtn" onclick="triggerRebuild()">Start indexing</button>
+    </div>
+
+    <div class="idx-empty-state" id="idxStale" style="display:none">
+      <h3>&#9888; Index is outdated</h3>
+      <p id="idxStaleMsg">Files have changed since the last index.</p>
+      <button class="btn" id="idxRebuildBtn" onclick="triggerRebuild()">Reindex now</button>
     </div>
   </div>
 
@@ -734,6 +807,34 @@ function _setOcrWidgets(ocr_pages, ocr_current_page, ocr_total_pages){
 function upProg(d){
   const{phase,message,current_file,current,total,chunks,skipped,eta,pct,
         ocr_pages=0,ocr_current_page=0,ocr_total_pages=0}=d;
+
+  // Update index status page
+  const idxBuilding = $("idxBuilding");
+  if(idxBuilding && idxBuilding.style.display !== "none"){
+    if(phase==="done"){
+      idxState.building = false;
+      idxState.hasIndex = true;
+      // After a short delay, switch to search
+      setTimeout(() => {
+        checkIndexStatus(); // re-check state and update UI
+        $("pg-idx-status").classList.remove("active");
+        $("pg-search").classList.add("active");
+      }, 2000);
+      return;
+    }
+    if(phase==="error" || phase==="cancelled"){
+      idxState.building = false;
+      setTimeout(() => checkIndexStatus(), 2000);
+      return;
+    }
+    $("idxPhase").textContent = phase.charAt(0).toUpperCase() + phase.slice(1);
+    $("idxSub").textContent = message || "";
+    $("idxFill").style.width = pct + "%";
+    $("idxFiles").textContent = `${current}/${total}`;
+    $("idxChunks").textContent = `${chunks} chunks`;
+    $("idxEta").textContent = eta > 0 ? `ETA ${fmtEta(eta)}` : "";
+  }
+
   const prog=$("prog");
   if(phase==="done"||phase==="error"||phase==="cancelled"){
     prog.classList.add("open");
@@ -779,6 +880,91 @@ function setPill(stale,building){
 // ── Toast ──
 let tt;function toast(m){const t=$("toast");t.textContent=m;t.classList.add("show");clearTimeout(tt);tt=setTimeout(()=>t.classList.remove("show"),3e3)}
 
+// ── Index status management ──
+let idxState = {building: false, stale: false, hasIndex: false};
+
+async function checkIndexStatus(){
+  try{
+    const r=await fetch("/api/health");
+    const h=await r.json();
+    const s=await fetch("/api/status");
+    const st=await s.json();
+
+    idxState.building = st.building || false;
+    idxState.stale = st.stale || false;
+    idxState.hasIndex = h.status === "ok";
+
+    updateIndexUI();
+  }catch(e){
+    console.warn("index status check failed:", e);
+  }
+}
+
+function updateIndexUI(){
+  const buildingPage = $("pg-idx-status");
+  const searchPage = $("pg-search");
+  const diffPage = $("pg-diff");
+
+  // If currently building (regardless of whether we have an index)
+  if(idxState.building){
+    showStatusPage(buildingPage);
+    $("idxBuilding").style.display = "block";
+    $("idxEmpty").style.display = "none";
+    $("idxStale").style.display = "none";
+    return;
+  }
+
+  // If no index at all (first time)
+  if(!idxState.hasIndex){
+    showStatusPage(buildingPage);
+    $("idxBuilding").style.display = "none";
+    $("idxEmpty").style.display = "block";
+    $("idxStale").style.display = "none";
+    return;
+  }
+
+  // If index is stale
+  if(idxState.stale){
+    showStatusPage(buildingPage);
+    $("idxBuilding").style.display = "none";
+    $("idxEmpty").style.display = "none";
+    $("idxStale").style.display = "block";
+    return;
+  }
+
+  // Index is good — show normal pages
+  buildingPage.classList.remove("active");
+  searchPage.classList.add("active");
+  // Don't auto-show diff, let the tab switch handle it
+}
+
+function showStatusPage(page){
+  // Hide all pages
+  document.querySelectorAll(".page").forEach(x => x.classList.remove("active"));
+  page.classList.add("active");
+  // Deactivate the diff tab highlight if it was active
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  // Keep the search tab "active" visually since that's the default
+  const searchTab = document.querySelector('.tab[data-p="search"]');
+  if(searchTab) searchTab.classList.add("active");
+}
+
+function triggerRebuild(){
+  const btn = $("idxStartBtn") || $("idxRebuildBtn");
+  if(btn) btn.disabled = true;
+
+  fetch("/api/rebuild", {method:"POST"})
+    .then(r => {
+      if(!r.ok) return r.json().then(d => {throw new Error(d.detail || "failed")});
+      idxState.building = true;
+      updateIndexUI();
+    })
+    .catch(e => {
+      toast(e.message);
+      if(btn) btn.disabled = false;
+    });
+}
+
 // ── Util ──
 function esc(s){if(!s)return"";const d=document.createElement("div");d.textContent=s;return d.innerHTML}
 function escRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}
@@ -786,7 +972,9 @@ function escRe(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}
 // ── Init ──
 (async()=>{
   try{const r=await fetch("/api/status");const d=await r.json();setPill(d.stale,d.building);if(d.info)pill.title=d.info;if(d.filebrowser_url)S.fb=d.filebrowser_url;if(d.building)setCancelVisible(true)}catch{pill.textContent="—";pill.className="pill stale"}
-  connectWS();q.focus();
+  await checkIndexStatus();
+  connectWS();
+  if(idxState.hasIndex && !idxState.building) q.focus();
 })();
 </script>
 </body>
