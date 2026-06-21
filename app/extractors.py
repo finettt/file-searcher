@@ -431,3 +431,122 @@ def extract_text(
     if ext in (".xlsx", ".xls"):
         return extract_excel_text(path)
     return read_text_file(path)
+
+
+# ── HTML preview (for docx / xlsx) ──────────────────────────────
+
+_MAX_PREVIEW_ROWS = 5000
+_MAX_PREVIEW_CHARS = 200_000
+
+
+def docx_to_html(path: Path) -> str | None:
+    """Convert a .docx file to a simple HTML preview string.
+    Returns None if the conversion fails.
+    """
+    t0 = time.monotonic()
+    try:
+        from docx import Document
+    except ImportError:
+        _warn_once("python-docx", "Для DOCX нужен пакет python-docx")
+        return None
+
+    try:
+        doc = Document(str(path))
+    except Exception as e:
+        log.warning("docx_to_html open error %s: %s", path, e)
+        return None
+
+    parts: list[str] = []
+    total_chars = 0
+    n_rows = 0
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if not text:
+            parts.append("<p style='margin:0 0 .4em'>&nbsp;</p>")
+            continue
+        parts.append(f"<p style='margin:0 0 .4em'>{_esc_html(text)}</p>")
+        total_chars += len(text) + 20
+        n_rows += 1
+        if n_rows > _MAX_PREVIEW_ROWS or total_chars > _MAX_PREVIEW_CHARS:
+            parts.append("<p style='color:var(--tx3);font-style:italic'>… truncated …</p>")
+            break
+
+    for table in doc.tables:
+        parts.append("<table style='border-collapse:collapse;margin:.5em 0;width:100%'>")
+        for ri, row in enumerate(table.rows):
+            tag = "th" if ri == 0 else "td"
+            parts.append("<tr>")
+            for cell in row.cells:
+                parts.append(
+                    f"<{tag} style='border:1px solid #3f3f46;padding:.25rem .5rem;"
+                    f"font-size:.75rem;text-align:left'>{_esc_html(cell.text[:200])}</{tag}>"
+                )
+            parts.append("</tr>")
+            n_rows += 1
+            total_chars += len(table.rows[ri].cells[0].text) if row.cells else 0
+            if n_rows > _MAX_PREVIEW_ROWS or total_chars > _MAX_PREVIEW_CHARS:
+                break
+        parts.append("</table>")
+        if n_rows > _MAX_PREVIEW_ROWS or total_chars > _MAX_PREVIEW_CHARS:
+            parts.append("<p style='color:var(--tx3);font-style:italic'>… truncated …</p>")
+            break
+
+    html = "".join(parts)
+    log.info("docx_to_html %s  rows=%d  chars=%d  time=%.2fs", path, n_rows, total_chars, time.monotonic() - t0)
+    return html
+
+
+def xlsx_to_html(path: Path) -> str | None:
+    """Convert an .xlsx file to a simple HTML table preview.
+    Returns None if the conversion fails.
+    """
+    t0 = time.monotonic()
+    try:
+        from openpyxl import load_workbook
+    except ImportError:
+        _warn_once("openpyxl", "Для XLSX нужен пакет openpyxl")
+        return None
+
+    try:
+        wb = load_workbook(str(path), read_only=True, data_only=True)
+    except Exception as e:
+        log.warning("xlsx_to_html open error %s: %s", path, e)
+        return None
+
+    parts: list[str] = []
+    total_chars = 0
+    n_rows = 0
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        parts.append(f"<h4 style='margin:.75em 0 .25em;font-size:.8rem;color:var(--tx2)'>{_esc_html(sheet_name)}</h4>")
+        parts.append("<table style='border-collapse:collapse;margin:0 0 .5em;width:100%'>")
+        for ri, row in enumerate(ws.iter_row()):
+            tag = "th" if ri == 0 else "td"
+            parts.append("<tr>")
+            for cell in row:
+                val = str(cell.value) if cell.value is not None else ""
+                parts.append(
+                    f"<{tag} style='border:1px solid #3f3f46;padding:.2rem .5rem;"
+                    f"font-size:.75rem;text-align:left'>{_esc_html(val[:200])}</{tag}>"
+                )
+            parts.append("</tr>")
+            n_rows += 1
+            total_chars += sum(len(str(c.value or "")) for c in row)
+            if n_rows > _MAX_PREVIEW_ROWS or total_chars > _MAX_PREVIEW_CHARS:
+                break
+        parts.append("</table>")
+        if n_rows > _MAX_PREVIEW_ROWS or total_chars > _MAX_PREVIEW_CHARS:
+            parts.append("<p style='color:var(--tx3);font-style:italic'>… truncated …</p>")
+            break
+
+    wb.close()
+    html = "".join(parts)
+    log.info("xlsx_to_html %s  rows=%d  chars=%d  time=%.2fs", path, n_rows, total_chars, time.monotonic() - t0)
+    return html
+
+
+def _esc_html(text: str) -> str:
+    """Escape text for use in HTML."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")

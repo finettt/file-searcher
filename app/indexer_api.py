@@ -31,7 +31,7 @@ from .config import (
     DEFAULT_SNIPPET_CHARS,
     DEFAULT_TOP_K,
 )
-from .extractors import extract_text
+from .extractors import docx_to_html, extract_text, xlsx_to_html
 from .indexer import BuildCancelled, build_index, build_index_selective
 from .logging_config import get_logger
 from .models import (
@@ -594,16 +594,38 @@ def create_indexer_app(
             return JSONResponse(status_code=403, content={"detail": "Access denied"})
         if not full_path.exists():
             return JSONResponse(status_code=404, content={"detail": "File not found"})
+
+        ext = full_path.suffix.lower()
+
+        # For docx/xlsx — return HTML preview
+        if ext == ".docx":
+            try:
+                html = docx_to_html(full_path)
+                if html:
+                    return JSONResponse(content={"type": "html", "html": html, "lines": 0, "truncated": False})
+            except Exception as e:
+                log.warning("docx preview failed %s: %s", full_path, e)
+
+        if ext in (".xlsx", ".xls"):
+            try:
+                html = xlsx_to_html(full_path)
+                if html:
+                    return JSONResponse(content={"type": "html", "html": html, "lines": 0, "truncated": False})
+            except Exception as e:
+                log.warning("xlsx preview failed %s: %s", full_path, e)
+
+        # Fallback: raw text
         try:
             text = extract_text(full_path)
         except Exception:
             text = ""
         if not text:
-            return JSONResponse(content={"text": "(binary or empty)", "lines": 0, "truncated": False})
+            return JSONResponse(content={"type": "text", "text": "(binary or empty)", "lines": 0, "truncated": False})
         truncated = len(text) > 50_000
         lines = text.count("\n") + 1
         return JSONResponse(
             content={
+                "type": "text",
                 "text": text[:50_000],
                 "lines": lines,
                 "truncated": truncated,
