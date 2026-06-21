@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 import threading
 import time
@@ -236,6 +238,7 @@ def build_index(
     batch_size: int = DEFAULT_BATCH_SIZE,
     progress: ProgressTracker | None = None,
     cancel_event: threading.Event | None = None,
+    checkpoint_path: str | None = None,
 ) -> Generator[ProgressEvent, None, None]:
     """Build a full semantic index from scratch → Qdrant.
 
@@ -265,164 +268,245 @@ def build_index(
     if not files:
         raise ValueError("No matching files found")
 
-    log.info("Discovered %d files in %s", len(files), _fmt_time(discover_dt))
+    # ── Checkpoint resume ─────────────────────────────────────
+    checkpoint: dict = {}
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            with open(checkpoint_path) as f:
+                checkpoint = json.load(f)
+            log.info(
+                "Loaded checkpoint: %d files already processed",
+                len(checkpoint.get("processed_files", [])),
+            )
+        except Exception as exc:
+            log.warning("Failed to load checkpoint: %s — starting from scratch", exc)
+            checkpoint = {}
+
+    processed = set(checkpoint.get("processed_files", []))
+    original_file_count = len(files)
+    if processed:
+        files = [f for f in files if str(f.relative_to(root)) not in processed]
+        log.info(
+            "Skipping %d already-processed files, %d remaining",
+            original_file_count - len(files),
+            len(files),
+        )
+        if not files:
+            log.info("All files already processed — build complete")
+            if not checkpoint.get("processed_files"):
+                raise ValueError("No matching files found")
+            if progress:
+                yield progress.done(len(checkpoint["processed_files"]))
+            return
+
+    log.info(
+        "Processing %d files in %s",
+        len(files),
+        _fmt_time(discover_dt),
+    )
 
     if progress:
         progress.start(len(files))
 
-    # Extract + chunk
+    # ── Process files in streaming batches ────────────────────
+    BATCH_FILES = batch_size * 5  # ~160 files per batch
     extract_t0 = time.monotonic()
-    embed_inputs: list[str] = []
-    chunks_meta: list[dict] = []
-    file_hashes: dict[str, str] = {}
+    all_chunks_meta: list[dict] = []
+    all_file_hashes: dict[str, str] = {}
+    total_chunks = 0
+    first_batch = True
 
-    for file_idx, path in enumerate(files):
-        if cancel_event and cancel_event.is_set():
-            raise BuildCancelled()
-        rel_path = str(path.relative_to(root))
-        skipped = False
-        chunk_count = 0
-        file_t0 = time.monotonic()
+    for batch_start in range(0, len(files), BATCH_FILES):
+        batch_files = files[batch_start : batch_start + BATCH_FILES]
+        batch_embed_inputs: list[str] = []
+        batch_chunks_meta: list[dict] = []
+        batch_file_hashes: dict[str, str] = {}
 
-        # Build OCR callbacks that emit progress events via the tracker
-        ocr_events: list = []  # collect events to yield after extract_text returns
+        # Extract + chunk for this batch
+        for batch_rel_idx, path in enumerate(batch_files):
+            file_idx = batch_start + batch_rel_idx  # 0-based global index
+            if cancel_event and cancel_event.is_set():
+                raise BuildCancelled()
+            rel_path = str(path.relative_to(root))
+            skipped = False
+            chunk_count = 0
+            file_t0 = time.monotonic()
 
-        def _on_ocr_start(page: int, total: int, _rp: str = rel_path) -> None:
-            if progress:
-                evt = progress.ocr_page_start(_rp, page, total)
-                ocr_events.append(evt)
+            # Build OCR callbacks that emit progress events via the tracker
+            ocr_events: list = []  # collect events to yield after extract_text returns
 
-        def _on_ocr_done(page: int, total: int, _rp: str = rel_path) -> None:
-            if progress:
-                evt = progress.ocr_page_done(_rp, page, total)
-                ocr_events.append(evt)
+            def _on_ocr_start(page: int, total: int, _rp: str = rel_path) -> None:
+                if progress:
+                    evt = progress.ocr_page_start(_rp, page, total)
+                    ocr_events.append(evt)
 
-        try:
-            file_size = path.stat().st_size
-            text = clean_text(
-                extract_text(
-                    path,
-                    ocr_client=ocr_client,
-                    ocr_model=ocr_model,
-                    on_ocr_page_start=_on_ocr_start if progress else None,
-                    on_ocr_page_done=_on_ocr_done if progress else None,
+            def _on_ocr_done(page: int, total: int, _rp: str = rel_path) -> None:
+                if progress:
+                    evt = progress.ocr_page_done(_rp, page, total)
+                    ocr_events.append(evt)
+
+            try:
+                file_size = path.stat().st_size
+                text = clean_text(
+                    extract_text(
+                        path,
+                        ocr_client=ocr_client,
+                        ocr_model=ocr_model,
+                        on_ocr_page_start=_on_ocr_start if progress else None,
+                        on_ocr_page_done=_on_ocr_done if progress else None,
+                    )
                 )
-            )
-            extract_dt = time.monotonic() - file_t0
+                extract_dt = time.monotonic() - file_t0
 
-            if not text:
-                skipped = True
-                log.debug(
-                    "[%d/%d] SKIP (empty) %s  size=%s  extract=%.2fs",
-                    file_idx + 1,
-                    len(files),
-                    rel_path,
-                    _fmt_size(file_size),
-                    extract_dt,
-                )
-            else:
-                chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-                if not chunks:
+                if not text:
                     skipped = True
                     log.debug(
-                        "[%d/%d] SKIP (no chunks) %s  text=%d chars",
-                        file_idx + 1,
-                        len(files),
-                        rel_path,
-                        len(text),
-                    )
-                else:
-                    for cid, (s, e, ct) in enumerate(chunks):
-                        embed_inputs.append(make_embed_input(rel_path, ct))
-                        chunks_meta.append(
-                            {
-                                "path": rel_path,
-                                "abs_path": str(path),
-                                "chunk_id": cid,
-                                "start": s,
-                                "end": e,
-                                "text": ct,
-                            }
-                        )
-                        chunk_count += 1
-                    file_hashes[rel_path] = utils.compute_file_hash(path)
-
-                    elapsed = time.monotonic() - build_t0
-                    eta = _fmt_eta(file_idx + 1, len(files), elapsed)
-                    log.debug(
-                        "[%d/%d] OK %s  size=%s  chunks=%d  chars=%d  extract=%.2fs  elapsed=%s  eta=%s",
+                        "[%d/%d] SKIP (empty) %s  size=%s  extract=%.2fs",
                         file_idx + 1,
                         len(files),
                         rel_path,
                         _fmt_size(file_size),
-                        chunk_count,
-                        len(text),
                         extract_dt,
-                        _fmt_time(elapsed),
-                        eta,
                     )
-                    if (file_idx + 1) % 10 == 0 or file_idx + 1 == len(files):
-                        log.info(
-                            "Extracted %d/%d files  (%d chunks so far, eta %s)",
+                else:
+                    chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+                    if not chunks:
+                        skipped = True
+                        log.debug(
+                            "[%d/%d] SKIP (no chunks) %s  text=%d chars",
                             file_idx + 1,
                             len(files),
-                            len(chunks_meta),
+                            rel_path,
+                            len(text),
+                        )
+                    else:
+                        for cid, (s, e, ct) in enumerate(chunks):
+                            batch_embed_inputs.append(make_embed_input(rel_path, ct))
+                            batch_chunks_meta.append(
+                                {
+                                    "path": rel_path,
+                                    "abs_path": str(path),
+                                    "chunk_id": cid,
+                                    "start": s,
+                                    "end": e,
+                                    "text": ct,
+                                }
+                            )
+                            chunk_count += 1
+                        batch_file_hashes[rel_path] = utils.compute_file_hash(path)
+
+                        elapsed = time.monotonic() - build_t0
+                        eta = _fmt_eta(file_idx + 1, len(files), elapsed)
+                        log.debug(
+                            "[%d/%d] OK %s  size=%s  chunks=%d  chars=%d  extract=%.2fs  elapsed=%s  eta=%s",
+                            file_idx + 1,
+                            len(files),
+                            rel_path,
+                            _fmt_size(file_size),
+                            chunk_count,
+                            len(text),
+                            extract_dt,
+                            _fmt_time(elapsed),
                             eta,
                         )
-        except Exception as exc:
-            log.warning(
-                "[%d/%d] ERROR %s: %s",
-                file_idx + 1,
-                len(files),
-                rel_path,
-                exc,
-            )
-            skipped = True
+                        if (file_idx + 1) % 10 == 0 or file_idx + 1 == len(files):
+                            log.info(
+                                "Extracted %d/%d files  (%d chunks so far, eta %s)",
+                                file_idx + 1,
+                                len(files),
+                                total_chunks + len(batch_chunks_meta),
+                                eta,
+                            )
+            except Exception as exc:
+                log.warning(
+                    "[%d/%d] ERROR %s: %s",
+                    file_idx + 1,
+                    len(files),
+                    rel_path,
+                    exc,
+                )
+                skipped = True
 
-        # Yield any buffered OCR page events first, then the file-done event
+            # Yield any buffered OCR page events first, then the file-done event
+            if progress:
+                for ocr_evt in ocr_events:
+                    yield ocr_evt
+                ocr_events.clear()
+                yield progress.file_done(rel_path, chunk_count, skipped)
+
+        if not batch_embed_inputs:
+            continue
+
+        # Embed this batch
         if progress:
-            for ocr_evt in ocr_events:
-                yield ocr_evt
-            ocr_events.clear()
-            yield progress.file_done(rel_path, chunk_count, skipped)
+            yield progress.set_phase(
+                "embedding",
+                f"Embedding batch {batch_start // BATCH_FILES + 1} ({len(batch_embed_inputs)} chunks)...",
+            )
+        if cancel_event and cancel_event.is_set():
+            raise BuildCancelled()
 
-    extract_dt_total = time.monotonic() - extract_t0
-    log.info(
-        "Extraction complete: %d files → %d chunks in %s  (skipped %d)",
-        len(files),
-        len(embed_inputs),
-        _fmt_time(extract_dt_total),
-        progress._skipped if progress else 0,
-    )
+        batch_embeddings = embed_texts(
+            client, model, batch_embed_inputs, batch_size=batch_size, cancel_event=cancel_event
+        )
+        batch_embeddings = l2_normalize_matrix(batch_embeddings)
 
-    if not embed_inputs:
+        # Sparse vectors for this batch
+        log.info("Computing sparse vectors for %d chunks...", len(batch_chunks_meta))
+        batch_sparse = [document_sparse_vector(chunk["text"], chunk.get("path", "")) for chunk in batch_chunks_meta]
+
+        if progress:
+            yield progress.set_phase("saving", "Saving to Qdrant...")
+        if cancel_event and cancel_event.is_set():
+            raise BuildCancelled()
+
+        # Recreate collection on first batch, then just upsert
+        if first_batch:
+            vector_size = batch_embeddings.shape[1]
+            log.info("Recreating Qdrant collection (vector_size=%d)", vector_size)
+            qdrant.recreate_collection(vector_size)
+            first_batch = False
+
+        _upsert_batch(
+            qdrant,
+            batch_chunks_meta,
+            batch_embeddings,
+            sparse_vectors=batch_sparse,
+            cancel_event=cancel_event,
+        )
+
+        # Free batch memory
+        del batch_embeddings, batch_sparse, batch_embed_inputs
+
+        # Accumulate metadata
+        total_chunks += len(batch_chunks_meta)
+        all_chunks_meta.extend(batch_chunks_meta)
+        all_file_hashes.update(batch_file_hashes)
+
+        # Save checkpoint after each batch
+        if checkpoint_path:
+            _checkpoint = {
+                "processed_files": list(all_file_hashes.keys()),
+                "total_files": original_file_count,
+                "total_chunks": total_chunks,
+                "model": model,
+                "root": str(root),
+            }
+            try:
+                with open(checkpoint_path, "w") as f:
+                    json.dump(_checkpoint, f)
+            except Exception as exc:
+                log.warning("Failed to save checkpoint: %s", exc)
+
+    # ── Post-processing ───────────────────────────────────────
+    if not all_file_hashes:
         raise ValueError("No text extracted from any file")
 
-    # Embed
+    # Set metadata
     if progress:
-        yield progress.set_phase("embedding", f"Embedding {len(embed_inputs)} chunks…")
+        yield progress.set_phase("saving", "Finalizing metadata...")
     if cancel_event and cancel_event.is_set():
         raise BuildCancelled()
-
-    embeddings = embed_texts(client, model, embed_inputs, batch_size=batch_size, cancel_event=cancel_event)
-    embeddings = l2_normalize_matrix(embeddings)
-
-    # Compute sparse vectors for native hybrid search
-    log.info("Computing sparse vectors for %d chunks…", len(chunks_meta))
-    sparse_vectors = [
-        document_sparse_vector(chunk["text"], chunk.get("path", ""))
-        for chunk in chunks_meta
-    ]
-
-    if progress:
-        yield progress.set_phase("saving", "Saving to Qdrant…")
-    if cancel_event and cancel_event.is_set():
-        raise BuildCancelled()
-
-    vector_size = embeddings.shape[1]
-    log.info("Recreating Qdrant collection (vector_size=%d)", vector_size)
-    qdrant.recreate_collection(vector_size)
-    _upsert_batch(qdrant, chunks_meta, embeddings, sparse_vectors=sparse_vectors, cancel_event=cancel_event)
 
     fs_hash = utils.compute_fs_hash(root, extensions)
     meta = {
@@ -432,22 +516,30 @@ def build_index(
         "chunk_size": chunk_size,
         "overlap": overlap,
         "fs_hash": fs_hash,
-        "file_hashes": file_hashes,
+        "file_hashes": all_file_hashes,
     }
     qdrant.set_metadata(meta, vector_size)
+
+    # Remove checkpoint on successful completion
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            os.remove(checkpoint_path)
+            log.debug("Checkpoint removed after successful build")
+        except Exception as exc:
+            log.warning("Failed to remove checkpoint: %s", exc)
 
     total_dt = time.monotonic() - build_t0
     n_indexed = len(files) - (progress._skipped if progress else 0)
     log.info("═══ Index build complete ═══")
     log.info("  root          : %s", root)
-    log.info("  files indexed : %d / %d", n_indexed, len(files))
-    log.info("  chunks        : %d", len(chunks_meta))
+    log.info("  files indexed : %d / %d", n_indexed, original_file_count)
+    log.info("  chunks        : %d", total_chunks)
     log.info("  embedding dim : %d", vector_size)
     log.info("  qdrant        : %s/%s", qdrant.url, qdrant.collection)
     log.info("  total time    : %s", _fmt_time(total_dt))
 
     if progress:
-        yield progress.done(len(chunks_meta))
+        yield progress.done(total_chunks)
 
 
 # ── Selective re-index (specific files/dirs) ──────────────────
@@ -627,10 +719,7 @@ def build_index_selective(
 
         # Compute sparse vectors for native hybrid search
         log.info("Computing sparse vectors for %d new chunks…", len(new_chunks))
-        sparse_vectors = [
-            document_sparse_vector(chunk["text"], chunk.get("path", ""))
-            for chunk in new_chunks
-        ]
+        sparse_vectors = [document_sparse_vector(chunk["text"], chunk.get("path", "")) for chunk in new_chunks]
 
         # ensure_collection creates if missing, uses new embeddings' dim
         vector_size = new_embeddings.shape[1]

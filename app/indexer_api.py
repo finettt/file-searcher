@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import threading
 from collections import deque
@@ -124,6 +125,7 @@ class IndexerState:
     rebuild_lock: bool = False
     cancelling: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    shutdown_event: threading.Event = field(default_factory=threading.Event)
     background_tasks: set[asyncio.Task] = field(default_factory=set)
     manager: ConnectionManager = field(default_factory=ConnectionManager)
 
@@ -150,13 +152,13 @@ def _is_stale(ctx: IndexerState) -> bool:
 
 
 async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = None) -> None:
+    # Safety check: if rebuild_lock is held but rebuilding is False (inconsistent state), allow through
     if ctx.rebuild_lock:
-        log.debug("Rebuild requested but lock held — ignoring")
-        return
-    ctx.rebuild_lock = True
-    ctx.rebuilding = True
-    ctx.cancelling = False
-    ctx.cancel_event.clear()
+        if ctx.rebuilding:
+            log.debug("Rebuild requested but lock held — ignoring")
+            return
+        log.debug("Rebuild lock held but not rebuilding — allowing rebuild (inconsistent state)")
+
     if selective_paths:
         log.info("Selective rebuild started for %d path(s)", len(selective_paths))
     else:
@@ -165,6 +167,11 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
     progress = ProgressTracker()
     loop = asyncio.get_running_loop()
     event_queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+    checkpoint_path = None
+    if not selective_paths:
+        safe = hashlib.sha256(str(ctx.data_dir).encode()).hexdigest()[:16]
+        checkpoint_path = f"/tmp/file_searcher_{safe}.json"
 
     def run_build() -> None:
         try:
@@ -202,6 +209,7 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
                     batch_size=ctx.batch_size,
                     progress=progress,
                     cancel_event=ctx.cancel_event,
+                    checkpoint_path=checkpoint_path,
                 )
 
             for evt in gen:
@@ -224,11 +232,18 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
     worker = asyncio.create_task(asyncio.to_thread(run_build))
 
     try:
+        ctx.rebuild_lock = True
+        ctx.rebuilding = True
+        ctx.cancelling = False
+        ctx.cancel_event.clear()
+
         while True:
             payload = await event_queue.get()
             if payload is None:
                 break
             ctx.manager.enqueue(payload)
+            if ctx.shutdown_event.is_set():
+                break
             await asyncio.sleep(0)
         await worker
     finally:
@@ -242,8 +257,9 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    yield
     ctx: IndexerState = app.state.ctx
+    yield
+    ctx.shutdown_event.set()
     if ctx.background_tasks:
         log.info("Shutting down: cancelling %d background task(s)", len(ctx.background_tasks))
         for task in ctx.background_tasks:
