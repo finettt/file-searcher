@@ -93,7 +93,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 8G
     command: >
       --host 0.0.0.0 --port 8000
       -m /models/qwen3-reranker-0.6b-q8_0.gguf

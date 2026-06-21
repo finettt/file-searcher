@@ -41,6 +41,7 @@ from .models import (
 from .progress import ProgressTracker
 from .log_utils import get_log_config
 from .searcher import do_search
+from .watcher import watch_directory
 
 log = get_logger(__name__)
 
@@ -128,6 +129,8 @@ class IndexerState:
     shutdown_event: threading.Event = field(default_factory=threading.Event)
     background_tasks: set[asyncio.Task] = field(default_factory=set)
     manager: ConnectionManager = field(default_factory=ConnectionManager)
+    rebuild_mutex: threading.Lock = field(default_factory=threading.Lock)
+    watcher_task: asyncio.Task | None = None
 
 
 def _get_ctx(request: Request) -> IndexerState:
@@ -152,12 +155,10 @@ def _is_stale(ctx: IndexerState) -> bool:
 
 
 async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = None) -> None:
-    # Safety check: if rebuild_lock is held but rebuilding is False (inconsistent state), allow through
-    if ctx.rebuild_lock:
-        if ctx.rebuilding:
-            log.debug("Rebuild requested but lock held — ignoring")
-            return
-        log.debug("Rebuild lock held but not rebuilding — allowing rebuild (inconsistent state)")
+    # Acquire rebuild mutex (coordinated with file watcher)
+    if not ctx.rebuild_mutex.acquire(blocking=False):
+        log.info("Rebuild skipped — another rebuild is already running")
+        return
 
     if selective_paths:
         log.info("Selective rebuild started for %d path(s)", len(selective_paths))
@@ -250,6 +251,7 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
         ctx.rebuilding = False
         ctx.rebuild_lock = False
         ctx.cancelling = False
+        ctx.rebuild_mutex.release()
 
 
 # ── Lifespan ──────────────────────────────────────────────────
@@ -258,12 +260,43 @@ async def _run_rebuild(ctx: IndexerState, selective_paths: list[str] | None = No
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     ctx: IndexerState = app.state.ctx
+
+    # Start file watcher for incremental re-indexing
+    async def _start_watcher():
+        try:
+            await watch_directory(
+                ctx.data_dir,
+                ctx.exts,
+                ctx.qdrant,
+                model=ctx.model,
+                api_key=ctx.api_key,
+                base_url=ctx.base_url,
+                ocr_api_key=ctx.ocr_api_key,
+                ocr_base_url=ctx.ocr_base_url,
+                ocr_model=ctx.ocr_model,
+                chunk_size=ctx.chunk_size,
+                overlap=ctx.overlap,
+                batch_size=ctx.batch_size,
+                shutdown_event=ctx.shutdown_event,
+            )
+        except asyncio.CancelledError:
+            pass
+
+    watcher = asyncio.create_task(_start_watcher())
+    ctx.watcher_task = watcher
+    ctx.background_tasks.add(watcher)
+    watcher.add_done_callback(ctx.background_tasks.discard)
+
     yield
+
     ctx.shutdown_event.set()
+    if ctx.watcher_task:
+        ctx.watcher_task.cancel()
     if ctx.background_tasks:
         log.info("Shutting down: cancelling %d background task(s)", len(ctx.background_tasks))
         for task in ctx.background_tasks:
-            task.cancel()
+            if not task.done():
+                task.cancel()
         await asyncio.gather(*ctx.background_tasks, return_exceptions=True)
         ctx.background_tasks.clear()
 
@@ -377,6 +410,7 @@ def create_indexer_app(
     @app.get("/api/status")
     async def api_status(request: Request):
         ctx = _get_ctx(request)
+        watching = ctx.watcher_task is not None and not ctx.watcher_task.done()
         if not ctx.qdrant.collection_exists():
             return JSONResponse(
                 content={
@@ -384,6 +418,7 @@ def create_indexer_app(
                     "building": ctx.rebuilding,
                     "info": "No index built yet",
                     "filebrowser_url": ctx.filebrowser_url,
+                    "watching": watching,
                 }
             )
         info = ctx.qdrant.get_info()
@@ -395,6 +430,7 @@ def create_indexer_app(
                 "building": ctx.rebuilding,
                 "info": info_str,
                 "filebrowser_url": ctx.filebrowser_url,
+                "watching": watching,
             }
         )
 

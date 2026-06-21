@@ -1,0 +1,40 @@
+# Local run override — adapts compose.dev.yml to our actual model files
+# Usage: docker compose -f compose.dev.yml -f compose.run.yml up --build -d
+services:
+  # Embedding: we have nomic-embed.gguf, not Qwen3-Embedding
+  llamacpp:
+    command: [
+      "--host", "0.0.0.0", "--port", "8000",
+      "-m", "/models/nomic-embed.gguf",
+      "--embedding",
+      "--alias", "${EMBEDDING_MODEL}",
+      "--ubatch-size", "2048", "--batch-size", "2048",
+      "-np", "1", "--cache-ram", "0"
+    ]
+    depends_on: []  # remove dependency on llamacpp-ocr
+
+  # OCR: we have qwen3.5-4b-Q4_K_M, not the 0.8B version
+  llamacpp-ocr:
+    command: >
+      --host 0.0.0.0 --port 8000
+      -m /models/qwen3.5-4b-Q4_K_M.gguf
+      --mmproj /models/mmproj-F16.gguf
+      -c 8192 -ngl 99 -fa on -np 1 --cache-ram 0
+      --image-min-tokens 1024 --image-max-tokens 2048 --reasoning off
+
+  # Reranker: model needs 6.4GiB, default limit was 4GiB
+  llamacpp-reranker:
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+
+  # Indexer: wait for reranker now that it has enough memory
+  indexer:
+    depends_on:
+      llamacpp:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      llamacpp-reranker:
+        condition: service_healthy
