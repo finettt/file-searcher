@@ -19,7 +19,7 @@ Semantic file search with hybrid BM25 + embedding search, OCR fallback for scann
               └─────────────────┘
 ```
 
-- **Web UI** (`main_webui.py`) — serves HTML, proxies API + WebSocket to indexer
+- **Nginx** (`nginx/nginx.conf`) — serves static frontend, proxies API + WebSocket to indexer
 - **Indexer** (`main_indexer.py`) — search, rebuild, diff, file preview, progress WS
 - **Qdrant** — dense + sparse (BM25) vector storage
 - **llama.cpp** — local embedding, OCR, and reranking models (GPU)
@@ -54,8 +54,8 @@ export EMBEDDING_MODEL=text-embedding-3-small
 # Start indexer
 python main_indexer.py /path/to/documents
 
-# Start web UI
-python main_webui.py
+# Serve frontend (via nginx or any static file server)
+python -m http.server 8001 --directory static/
 ```
 
 ## API

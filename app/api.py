@@ -1,10 +1,9 @@
 """Backward-compatibility shim.
 
-The monolithic app factory has been split into two focused modules:
+The monolithic app factory has been split into a focused module:
 
   - :mod:`app.indexer_api` — indexer service (search, rebuild, diff,
     file preview, progress WebSocket)
-  - :mod:`app.webui_api`   — web UI gateway (HTML + proxy to indexer)
 
 This module re-exports the old ``create_app`` / ``run_app`` names so that
 existing code (``main.py``, tests) that imports from ``app.api`` continues

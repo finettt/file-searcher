@@ -20,8 +20,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-editable
 
 COPY app/ ./app/
-COPY main.py main_indexer.py main_webui.py ./
-COPY templates/ ./templates/
+COPY main.py main_indexer.py ./
 
 # /data  — mounted RO (source documents)
 RUN mkdir /data && \
@@ -32,8 +31,8 @@ USER app
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Web UI on 8001, Indexer on 8002
-EXPOSE 8001 8002
+# Indexer API on 8002
+EXPOSE 8002
 
 # Default: show help (override via compose command)
 ENTRYPOINT ["python"]

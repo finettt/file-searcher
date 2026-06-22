@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 # ── File filters ──────────────────────────────────────────────
 
@@ -46,4 +45,4 @@ DEFAULT_RERANKER_TOP_CANDIDATES = 50  # BM25 pool size fed to cross-encoder
 
 # ── Paths ─────────────────────────────────────────────────────
 
-TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
+

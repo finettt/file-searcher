@@ -3,9 +3,8 @@
 Verifies that the re-exported ``create_app`` factory (which delegates to
 ``create_indexer_app``) still works for existing callers.
 
-Full coverage for the individual services lives in:
+Full coverage for the indexer service lives in:
   - tests/test_indexer_api.py
-  - tests/test_webui_api.py
 """
 
 from __future__ import annotations

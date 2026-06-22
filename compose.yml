@@ -168,22 +168,21 @@ services:
       start_period: 30s
     stop_grace_period: 120s
 
-  # 5. Web UI gateway (serves HTML, proxies API calls to indexer)
-  webui:
-    image: ghcr.io/finettt/file-searcher:stable
-    container_name: webui
+  # 5. Nginx reverse proxy (serves static frontend, proxies API/WS to indexer)
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.nginx
+    image: ghcr.io/finettt/file-searcher-nginx:stable
+    container_name: nginx
     ports:
       - "8001:8001"
     networks:
       - app-network
-    environment:
-      - INDEXER_URL=http://indexer:8002
-      - HIDE_HEALTH=${HIDE_HEALTH:-false}
-    command: ["main_webui.py", "--port", "8001", "--indexer-url", "http://indexer:8002"]
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 128M
     restart: unless-stopped
     depends_on:
       indexer:
