@@ -874,7 +874,7 @@ function upProg(d){
   $("pFill").style.width=pct+"%";
   $("pEta").textContent=eta>0?fmtEta(eta):"";
   $("pFiles").textContent=`${current}/${total}`;
-  $("pChunks").textContent={`${chunks} ch`;$("pSkip").textContent=`${skipped} skip`;
+  $("pChunks").textContent=`${chunks} ch`;$("pSkip").textContent=`${skipped} skip`;
   _setOcrWidgets(ocr_pages, ocr_current_page, ocr_total_pages);
   if(!S.cancelling)setCancelVisible(true);
   if(S.cancelling){
